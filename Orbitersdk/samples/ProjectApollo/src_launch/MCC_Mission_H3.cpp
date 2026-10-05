@@ -64,7 +64,7 @@ void MCC::MissionSequence_H3()
 	case MST_H3_INSERTION: //Liftoff initialization, then TLI sim at the 1:40 block-data pass
 		UpdateMacro(UTP_NONE, PT_NONE, mcc_calcs.GETEval(A14GET(1, 40, 0)), 10, MST_H3_EPO1);
 		break;
-	case MST_H3_EPO1: //TLI simulation from the Apollo 14 TLI file
+	case MST_H3_EPO1: //TLI simulation from the Apollo 14 TLI file. Sep attitude is not published.
 		UpdateMacro(UTP_NONE, PT_NONE, true, 11, MST_H3_EPO2);
 		break;
 	case MST_H3_EPO2: //TLI+90, Table I-7 passed at 1:40
@@ -73,7 +73,7 @@ void MCC::MissionSequence_H3()
 	case MST_H3_EPO3: //L/O+8, Table I-7 passed at 1:40
 		UpdateMacro(UTP_PADONLY, PT_P37PAD, SubStateTime > 3.0 * 60.0, 13, MST_H3_EPO4);
 		break;
-	case MST_H3_EPO4: //Pre-burn TLI pad, held until burnout + 18 s
+	case MST_H3_EPO4: //Pre-burn TLI pad, held until burnout + 18 s. SEP attitude is omitted.
 		UpdateMacro(UTP_PADONLY, PT_TLIPAD, mcc_calcs.GETEval(rtcc->calcParams.TLI + 18.0), 14, MST_H3_TRANSLUNAR_DAY1_1);
 		break;
 	case MST_H3_TRANSLUNAR_DAY1_1: //TLI evaluation. Second opportunity is the in-tree TLI file, GET 3:00
@@ -446,10 +446,10 @@ void MCC::MissionSequence_H3()
 	case MST_H3_LUNAR_ORBIT_ASCENT_DAY_1:
 		UpdateMacro(UTP_CMCUPLINKONLY, PT_NONE, SubStateTime > 5.0 * 60.0, 100, MST_H3_LUNAR_ORBIT_ASCENT_DAY_2);
 		break;
-	case MST_H3_LUNAR_ORBIT_ASCENT_DAY_2:
+	case MST_H3_LUNAR_ORBIT_ASCENT_DAY_2: //Table I-6 has no H/V split, so the ascent pad is not filled with Apollo 12 components
 		UpdateMacro(UTP_PADONLY, PT_AP12LMASCPAD, mcc_calcs.GETEval(rtcc->calcParams.LunarLiftoff - 45.0 * 60.0), 105, MST_H3_LUNAR_ORBIT_ASCENT_DAY_3);
 		break;
-	case MST_H3_LUNAR_ORBIT_ASCENT_DAY_3:
+	case MST_H3_LUNAR_ORBIT_ASCENT_DAY_3: //Direct rendezvous: Table I-6 has TPI, not a CSI
 		UpdateMacro(UTP_PADONLY, PT_AP10CSI, SubStateTime > 3.0 * 60.0, 106, MST_H3_LUNAR_ORBIT_ASCENT_DAY_4);
 		break;
 	case MST_H3_LUNAR_ORBIT_ASCENT_DAY_4:

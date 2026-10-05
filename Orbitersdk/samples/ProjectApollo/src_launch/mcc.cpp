@@ -3298,8 +3298,14 @@ void MCC::drawPad(bool writetofile){
 			OrbMech::format_time_HHHMMSS(tmpbuf, form->TB6P);
 			OrbMech::SStoHHMMSS(form->BurnTime, hh, mm, ss);
 
-			sprintf_s(buffer2, "%s TB6p\nXXX%03.0f R\nXXX%03.0f P TLI\nXXX%03.0f Y\nXXX%d:%02.0f BT\n%07.1f DVC\n%+05.0f VI\nXXX%03.0f R\nXXX%03.0f P SEP\nXXX%03.0f Y\n", tmpbuf, form->IgnATT.x, form->IgnATT.y, form->IgnATT.z, mm, ss, form->dVC, form->VI, form->SepATT.x, form->SepATT.y, form->SepATT.z);
+			sprintf_s(buffer2, "%s TB6p\nXXX%03.0f R\nXXX%03.0f P TLI\nXXX%03.0f Y\nXXX%d:%02.0f BT\n%07.1f DVC\n%+05.0f VI\n", tmpbuf, form->IgnATT.x, form->IgnATT.y, form->IgnATT.z, mm, ss, form->dVC, form->VI);
 			buffer3.append(buffer2);
+			// type 0 omits SEP. Apollo 14 has no published post-TLI separation attitude.
+			if (form->type != 0)
+			{
+				sprintf_s(buffer2, "XXX%03.0f R\nXXX%03.0f P SEP\nXXX%03.0f Y\n", form->SepATT.x, form->SepATT.y, form->SepATT.z);
+				buffer3.append(buffer2);
+			}
 
 			if (form->type == 2)
 			{

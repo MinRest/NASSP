@@ -36,8 +36,9 @@ See http://nassp.sourceforge.net/license/ for more details.
 // MCC-3 is LOI-22 h and MCC-4 is LOI-5 h (Mission Techniques, H-2 and subsequent).
 // The LM-impact note (October 1970) gives the post-rendezvous separation axis and
 // the deorbit components. MSC 71-FM54-41 gives the MCC-5 threshold of 1 fps.
-// MSC 71-FM62-28 gives the TPI offsets used by the delegated ascent updates:
-// 15 nm below and an elevation of 26.6 degrees.
+// Table I-6 gives ascent 142:24:29 and TPI 143:09:40. It does not give the
+// horizontal/vertical insertion split, so those Apollo 12 components are not used.
+// MSC-04112: the rendezvous is direct, so there is no CSI pad.
 
 static double A14SS(int h, int m, double s)
 {
@@ -53,7 +54,9 @@ static const double A14_DOI = 86.0 * 3600.0 + 56.0 * 60.0 + 57.0;       // Table
 static const double A14_UNDOCK = 104.0 * 3600.0 + 27.0 * 60.0 + 31.0;   // Table I-5
 static const double A14_CIRC = 105.0 * 3600.0 + 46.0 * 60.0 + 48.0;     // Table I-5
 static const double A14_PDI = 108.0 * 3600.0 + 42.0 * 60.0 + 1.0;       // Table I-6
+static const double A14_PC1 = 118.0 * 3600.0 + 9.0 * 60.0 + 40.0;       // Table I-5
 static const double A14_LIFTOFF = 142.0 * 3600.0 + 24.0 * 60.0 + 29.0;  // Table I-6
+static const double A14_TPI = 143.0 * 3600.0 + 9.0 * 60.0 + 40.0;       // Table I-6
 static const double A14_SEP = 146.0 * 3600.0 + 28.0 * 60.0 + 31.0;      // Table I-5
 static const double A14_DEORBIT = 147.0 * 3600.0 + 52.0 * 60.0 + 58.9;  // Table I-6
 static const double A14_TEI = 149.0 * 3600.0 + 14.0 * 60.0 + 50.0;      // Table I-5
@@ -122,6 +125,44 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 
 	switch (fcn)
 	{
+	case 11: //TLI simulation from the Apollo 14 TLI file. No separation attitude is added.
+	{
+		if (PZMPTCSM.ManeuverNum > 0)
+		{
+			GMGMED("M62,CSM,1,D;");
+		}
+
+		med_m55.Table = RTCC_MPT_CSM;
+		MPTMassUpdate(calcParams.src, med_m50, med_m55, med_m49);
+		PMMWTC(55);
+		med_m50.Table = RTCC_MPT_CSM;
+		med_m50.WeightGET = GETfromGMT(RTCCPresentTimeGMT());
+		PMMWTC(50);
+
+		StateVectorTableEntry sv0;
+		sv0.Vector = StateVectorCalcEphem(calcParams.src);
+		sv0.LandingSiteIndicator = false;
+		sv0.VectorCode = "APIC001";
+		PMSVCT(4, RTCC_MPT_CSM, sv0);
+
+		// Second opportunity is the in-tree TLI file, GET 3:00.
+		if (mcc->mcc_calcs.GETEval(A14SS(3, 0, 0.0)))
+		{
+			GMGMED("M68,CSM,2;");
+		}
+		else
+		{
+			GMGMED("M68,CSM,1;");
+		}
+
+		// The H1 calculator inserts an inertial separation attitude of
+		// 48.6, -130.9, -139.1 deg. The A14 flight plan, AS-509 operational
+		// trajectory (19710005842), and MSC-04112 do not print that attitude.
+		TimeofIgnition = GETfromGMT(PZMPTCSM.mantable[0].GMT_BI);
+		calcParams.TLI = GETfromGMT(PZMPTCSM.mantable[0].GMT_BO);
+		A14Msg(upMessage, "A14 TLI sim. Post-TLI sep attitude is not published; Apollo 12 angles are not used.");
+	}
+	break;
 	case 12: //TLI+90. Table I-7: GETI 4:00, GETIL 12:12, AOL
 	{
 		EntryOpt entopt;
@@ -177,6 +218,24 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 		AGCStateVectorUpdate(buffer1, RTCC_MPT_CSM, RTCC_MPT_CSM, sv_uplink, true);
 		sprintf(uplinkdata, "%s", buffer1);
 		A14GiveUplink(upString, upDesc, uplinkdata, "CSM state vector, V66");
+	}
+	break;
+	case 14: //TLI pad from the A14 TLI file. SEP and extraction attitudes are omitted.
+	{
+		TLIPAD *form = (TLIPAD *)pad;
+
+		GMGMED("U20,CSM,1;");
+		// TB6 starts 9 min 38 s before TLI ignition. That lead is the S-IVB timebase, not an attitude.
+		form->TB6P = DMTBuffer[0].GETI - 9.0 * 60.0 - 38.0;
+		form->IgnATT = DMTBuffer[0].IMUAtt;
+		form->BurnTime = DMTBuffer[0].DT_B;
+		form->dVC = DMTBuffer[0].DVC;
+		form->VI = length(PZMPTCSM.mantable[0].V_BO) / 0.3048;
+		form->type = 0;
+		sprintf(form->remarks, "SEP/EXT attitude omitted; not in the A14 flight plan");
+
+		GMGMED("M62,CSM,1,D;");
+		EZANCHR1.AnchorVectors[9].Vector.GMT = 0.0;
 	}
 	break;
 	case 13: //L/O+8. Table I-7: GETI 8:00, GETIL 46:29, MPL
@@ -1462,12 +1521,164 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 		}
 	}
 	break;
+	case 73: //Lunar surface card. Table I-6 does not give the Apollo 12 T2/T3 times.
+		scrubbed = true;
+		A14Msg(upMessage, "A14 surface card skipped. Table I-6 ascent 142:24:29, TPI 143:09:40; no T2/T3");
+		break;
+	case 85: //Liftoff times. Only the Table I-6 nominal is printed.
+	case 86:
+	{
+		LIFTOFFTIMES *form = (LIFTOFFTIMES *)pad;
+
+		form->entries = 1;
+		form->startdigit = 1;
+		form->TIG[0] = A14_LIFTOFF;
+		A14Msg(upMessage, "Nominal ascent only, Table I-6 142:24:29. Other rev times are not tabulated.");
+	}
+	break;
+	case 94: //PC-1. Table I-5 planned TIG 118:09:40. The processor solves the burn.
+	{
+		SV sv;
+		double GET_SV;
+		AP11ManPADOpt manopt;
+		REFSMMATOpt refsopt;
+		MATRIX3 REFSMMAT;
+		char buffer1[1000], buffer2[1000], buffer3[1000];
+		AP11MNV *form = (AP11MNV *)pad;
+
+		sv = StateVectorCalc(calcParams.src);
+		GET_SV = OrbMech::GETfromMJD(sv.MJD, CalcGETBase());
+		calcParams.LunarLiftoff = A14_LIFTOFF;
+		// One hour of coast before the search. Not a second flight-plan time.
+		med_k16.GETTH1 = GET_SV + 3600.0;
+		// Plane epoch is liftoff, Table I-6. Planned TIG remains 118:09:40.
+		med_k16.GETTH2 = med_k16.GETTH3 = med_k16.GETTH4 = A14_LIFTOFF;
+		med_k16.Mode = 7;
+		med_k16.Sequence = 1;
+		med_k16.Vehicle = RTCC_MPT_CSM;
+		GZGENCSN.LDPPAzimuth = 0.0;
+
+		if (LunarDescentPlanningProcessor(ConvertSVtoEphemData(sv), 0.0) != 0)
+		{
+			scrubbed = true;
+			A14Msg(upMessage, "A14 PC-1 skipped: plane-change targeting failed");
+		}
+		else
+		{
+			PoweredFlightProcessor(sv, PZLDPDIS.GETIG[0], RTCC_ENGINETYPE_CSMSPS, 0.0, PZLDPDIS.DVVector[0] * 0.3048, true, TimeofIgnition, DeltaV_LVLH);
+			refsopt.dV_LVLH = DeltaV_LVLH;
+			refsopt.HeadsUp = true;
+			refsopt.REFSMMATTime = TimeofIgnition;
+			refsopt.REFSMMATopt = 0;
+			refsopt.vessel = calcParams.src;
+			refsopt.vesseltype = 0;
+			REFSMMAT = REFSMMATCalc(&refsopt);
+
+			manopt.TIG = TimeofIgnition;
+			manopt.dV_LVLH = DeltaV_LVLH;
+			manopt.enginetype = RTCC_ENGINETYPE_CSMSPS;
+			manopt.HeadsUp = true;
+			manopt.REFSMMAT = REFSMMAT;
+			manopt.UllageDT = 0.0;
+			manopt.RV_MCC = ConvertSVtoEphemData(sv);
+			manopt.WeightsTable = GetWeightsTable(calcParams.src, true, false);
+			AP11ManeuverPAD(manopt, *form);
+			sprintf(form->purpose, "PC-1");
+			// Table I-5: 118:09:40, 18.4 s, 360.7 fps, HA 61.71 HP 57.41. Ullage column is not isolated.
+			sprintf(form->remarks, "Table I-5 planned 118:09:40. Ullage not stated, none applied");
+
+			AGCStateVectorUpdate(buffer1, sv, true);
+			CMCExternalDeltaVUpdate(buffer2, TimeofIgnition, DeltaV_LVLH);
+			AGCDesiredREFSMMATUpdate(buffer3, REFSMMAT);
+			sprintf(uplinkdata, "%s%s%s", buffer1, buffer2, buffer3);
+			A14GiveUplink(upString, upDesc, uplinkdata, "CSM state vector, Target load, Plane Change REFSMMAT");
+		}
+	}
+	break;
+	case 100: //Ascent targeting. Table I-6 times only; H/V components are not in the table.
+	{
+		REFSMMATOpt refsopt;
+		MATRIX3 REFSMMAT;
+		SV sv_LM;
+		char buffer1[64];
+		char buffer2[1000];
+
+		calcParams.LunarLiftoff = A14_LIFTOFF;
+		calcParams.TPI = A14_TPI;
+		// Cleared so the Apollo 12 insertion split 5533.9 / 34.4 fps is not reused.
+		DeltaV_LVLH = _V(0, 0, 0);
+
+		refsopt.LSLat = BZLAND.lat[RTCC_LMPOS_BEST];
+		refsopt.LSLng = BZLAND.lng[RTCC_LMPOS_BEST];
+		refsopt.REFSMMATopt = 5;
+		refsopt.REFSMMATTime = A14_LIFTOFF;
+		refsopt.vessel = calcParams.src;
+		REFSMMAT = REFSMMATCalc(&refsopt);
+		EMGSTSTM(RTCC_MPT_LM, REFSMMAT, RTCC_REFSMMAT_TYPE_LLD, RTCCPresentTimeGMT());
+		GMGMED("G00,LEM,LLD,CSM,LCV;");
+
+		sv_LM = StateVectorCalc(calcParams.tgt);
+		sprintf(buffer1, "V45E");
+		AGCStateVectorUpdate(buffer2, sv_LM, false);
+		sprintf(uplinkdata, "%s%s", buffer1, buffer2);
+		A14GiveUplink(upString, upDesc, uplinkdata, "Reset surface flag, LM state vector");
+		A14Msg(upMessage, "A14 ascent Table I-6: 142:24:29, TPI 143:09:40, 6053.4 fps. H/V split is not in the table.");
+	}
+	break;
+	case 105: //Ascent pad. Table I-6 prints total DV, not the horizontal and vertical split.
+		scrubbed = true;
+		A14Msg(upMessage, "A14 ascent Table I-6: 142:24:29, 7:10.7, 6053.4 fps, HA 50.96 HP 9.14, ullage none. H/V not printed.");
+		break;
+	case 106: //No coelliptic CSI on the direct rendezvous.
+		scrubbed = true;
+		A14Msg(upMessage, "No A14 CSI. Direct rendezvous; Table I-6 TPI is 143:09:40.");
+		break;
 	default:
-		// Live SV, DAP, TLI from the Apollo 14 TLI file, maps, and LOI from the SFP.
-		// 71-FM62-28 confirms the delegated TPI offsets: 15 nm below, elevation 26.6 deg.
-		// The padload RLS matches the Fra Mauro SFP site. Update 11 still uses the
-		// Apollo 12 separation attitude; these documents do not give an A14 attitude.
-		return CalculationMTP_H1(fcn, pad, upString, upDesc, upMessage);
+		switch (fcn)
+		{
+		case 1: //CSM state vector
+		case 2: //LM state vector in the CSM
+		case 5: //CSM state vector with V66
+		case 7: //CSM DAP
+		case 9: //LM DAP with V42
+		case 10: //Liftoff initialization from the live launch azimuth
+		case 15: //TLI evaluation from the LVDC timebase
+		case 25: //MCC-4 perilune test, Mission Techniques H-2
+		case 29: //LOI from the Apollo 14 SFP
+		case 30:
+		case 33: //LOI evaluation
+		case 36: //AGS activation from the live clock
+		case 60: //Rev 1 map from the trajectory
+		case 66: //LM acquisition at the landed site
+		case 71: //PDI abort TPI is sunrise minus 23 min, the H-mission rule
+		case 74: //P22 acquisition at the landed site
+		case 75: //LM state vector and RLS
+		case 77: //DOI evaluation
+		case 78: //PDI evaluation
+		case 80: //Stay for T1
+		case 81: //Stay for T2
+		case 96: //Liftoff REFSMMAT at the Table I-6 liftoff already stored
+		case 101: //Insertion state vectors
+		case 102:
+		case 107: //Liftoff evaluation
+		case 140: //PTC quads from the live RCS load
+		case 170: //No-PDI recycle. Abort offsets match update 35, not an Apollo 12 site.
+		case 200: //TEI evaluation
+		case 205: //Entry-interface evaluation
+		case 600: //Map from the trajectory
+		case 601:
+		case 700: //Docked CSM DAP
+			// None of these copy an Apollo 12 site, attitude, or pad number.
+			return CalculationMTP_H1(fcn, pad, upString, upDesc, upMessage);
+		default:
+			scrubbed = true;
+			if (upMessage != NULL)
+			{
+				sprintf(upMessage, "A14 update %d skipped: no flight-plan value; Apollo 12 data is not used", fcn);
+			}
+			break;
+		}
+		break;
 	}
 
 	return scrubbed;
