@@ -39,8 +39,9 @@ using namespace nassp;
 // Same state machine shape as Mission H1. An update runs when its state is
 // entered; the GET on that line is when the state hands off to the next update.
 // Times are the 18 January 1971 final flight plan (HSI-209261) and the Apollo 14
-// press kit. A few minutes between an evaluation and its pad is the same processing
-// gap the H1 script uses, not a second flight-plan time.
+// press kit. Separation and deorbit axes are the flight-plan notes and the
+// October 1970 LM-impact note. A few minutes between an evaluation and its pad
+// is the same processing gap the H1 script uses, not a second flight-plan time.
 //
 // Table I-5: TLI 02:30:38, MCC-1 11:36:33, MCC-2 30:36:07, MCC-3 60:38:14,
 // MCC-4 77:38:14, LOI 82:38:14, DOI 86:56:57, undock/sep 104:27:31,
@@ -305,11 +306,11 @@ void MCC::MissionSequence_H3()
 	case MST_H3_LUNAR_ORBIT_PDI_DAY_1: //14-1 through 14-4, revs 12/13/15
 		UpdateMacro(UTP_PADONLY, PT_AP11LMARKTRKPAD, mcc_calcs.GETEval(A14GET(104, 20, 0)), 67, MST_H3_LUNAR_ORBIT_PDI_DAY_2);
 		break;
-	case MST_H3_LUNAR_ORBIT_PDI_DAY_2: //Undock/sep 104:27:31
+	case MST_H3_LUNAR_ORBIT_PDI_DAY_2: //Undock/sep 104:27:31, radial, CSM below
 		UpdateMacro(UTP_PADONLY, PT_AP12SEPPAD, mcc_calcs.GETEval(A14GET(105, 40, 0)), 37, MST_H3_LUNAR_ORBIT_PDI_DAY_3);
 		break;
-	case MST_H3_LUNAR_ORBIT_PDI_DAY_3: //Circ 105:46:48. Scalar only; no LVLH in Table I-5
-		UpdateMacro(UTP_NONE, PT_NONE, SubStateTime > 3.0 * 60.0, 502, MST_H3_LUNAR_ORBIT_PDI_DAY_4);
+	case MST_H3_LUNAR_ORBIT_PDI_DAY_3: //Circ 105:46:48, perilune 56.04 nm
+		UpdateMacro(UTP_PADWITHCMCUPLINK, PT_AP11MNV, SubStateTime > 3.0 * 60.0, 502, MST_H3_LUNAR_ORBIT_PDI_DAY_4);
 		break;
 	case MST_H3_LUNAR_ORBIT_PDI_DAY_4:
 		UpdateMacro(UTP_PADONLY, PT_AP10DAPDATA, mcc_calcs.GETEval(A14GET(107, 0, 0)), 7, MST_H3_LUNAR_ORBIT_PDI_DAY_5);
@@ -472,7 +473,7 @@ void MCC::MissionSequence_H3()
 	case MST_H3_LUNAR_ORBIT_ASCENT_DAY_10:
 		UpdateMacro(UTP_PADONLY, PT_AP10MAPUPDATE, mcc_calcs.GETEval(A14GET(146, 20, 0)), 600, MST_H3_LUNAR_ORBIT_ASCENT_DAY_11);
 		break;
-	case MST_H3_LUNAR_ORBIT_ASCENT_DAY_11: //CSM sep 146:28:31, 1 fps retrograde
+	case MST_H3_LUNAR_ORBIT_ASCENT_DAY_11: //CSM sep 146:28:31, 1 fps retrograde, +Z thrusters
 		UpdateMacro(UTP_PADWITHCMCUPLINK, PT_AP11MNV, mcc_calcs.GETEval(A14GET(147, 40, 0)), 110, MST_H3_LUNAR_ORBIT_PC2_DAY_1);
 		break;
 	case MST_H3_LUNAR_ORBIT_ASCENT_DAY_12:
@@ -493,8 +494,8 @@ void MCC::MissionSequence_H3()
 	case MST_H3_LUNAR_ORBIT_PC2_DAY_2: //TEI-35
 		UpdateMacro(UTP_PADONLY, PT_AP11MNV, mcc_calcs.GETEval(A14GET(147, 50, 0)), 51, MST_H3_LUNAR_ORBIT_PC2_DAY_3);
 		break;
-	case MST_H3_LUNAR_ORBIT_PC2_DAY_3: //LM deorbit scalar only
-		UpdateMacro(UTP_PADONLY, PT_AP11LMMNV, SubStateTime > 3.0 * 60.0, 111, MST_H3_LUNAR_ORBIT_PC2_DAY_4);
+	case MST_H3_LUNAR_ORBIT_PC2_DAY_3: //LM deorbit 147:52:58.9, 180 fps retrograde, 36.5 fps north
+		UpdateMacro(UTP_PADWITHLGCUPLINK, PT_AP11LMMNV, SubStateTime > 3.0 * 60.0, 111, MST_H3_LUNAR_ORBIT_PC2_DAY_4);
 		break;
 	case MST_H3_LUNAR_ORBIT_PC2_DAY_4:
 		UpdateMacro(UTP_PADONLY, PT_AP11P76PAD, mcc_calcs.GETEval(A14GET(149, 10, 0)), 112, MST_H3_LUNAR_ORBIT_PC2_DAY_27);

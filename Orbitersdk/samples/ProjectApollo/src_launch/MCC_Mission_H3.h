@@ -32,8 +32,10 @@ See http://nassp.sourceforge.net/license/ for more details.
 //
 // GET gates and pad inputs are the Apollo 14 final flight plan (18 January 1971,
 // HSI-209261): Tables I-5, I-6, I-7, I-10, and I-11, the REFSMMAT section, and
-// the press-kit S-IVB and GET-sync times. State numbers match the H1 script so a
-// saved Apollo 12 scenario (MissionType 8) never enters this chain.
+// the undock/jettison notes. Maneuver axes that the tables omit are taken from
+// the October 1970 LM-impact note and from MSC 71-FM54-41 / 71-FM62-28. The CMC
+// and LGC padloads confirm the Fra Mauro RLS already stored in the Apollo 14 SFP.
+// State numbers match the H1 script so a saved Apollo 12 scenario never enters.
 
 
 //Ground liftoff time update to TLI Simulation

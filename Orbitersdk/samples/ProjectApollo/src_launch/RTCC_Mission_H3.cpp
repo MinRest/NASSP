@@ -33,8 +33,11 @@ See http://nassp.sourceforge.net/license/ for more details.
 
 // Planned GET from the Apollo 14 final flight plan, 18 January 1971 (HSI-209261).
 // Delta-V is solved on the live trajectory. Preflight delta-V is not copied in.
-// MCC-3/MCC-4 GETIs are LOI minus 22 h and 5 h. The flight-plan LOI GETI is
-// 82:38:14, and the LOI-5 flyby column prints 77:38.
+// MCC-3 is LOI-22 h and MCC-4 is LOI-5 h (Mission Techniques, H-2 and subsequent).
+// The LM-impact note (October 1970) gives the post-rendezvous separation axis and
+// the deorbit components. MSC 71-FM54-41 gives the MCC-5 threshold of 1 fps.
+// MSC 71-FM62-28 gives the TPI offsets used by the delegated ascent updates:
+// 15 nm below and an elevation of 26.6 degrees.
 
 static double A14SS(int h, int m, double s)
 {
@@ -47,6 +50,8 @@ static const double A14_MCC2 = 30.0 * 3600.0 + 36.0 * 60.0 + 7.0;       // Table
 static const double A14_MCC3 = 60.0 * 3600.0 + 38.0 * 60.0 + 14.0;      // LOI-22h
 static const double A14_MCC4 = 77.0 * 3600.0 + 38.0 * 60.0 + 14.0;      // LOI-5h
 static const double A14_DOI = 86.0 * 3600.0 + 56.0 * 60.0 + 57.0;       // Table I-5
+static const double A14_UNDOCK = 104.0 * 3600.0 + 27.0 * 60.0 + 31.0;   // Table I-5
+static const double A14_CIRC = 105.0 * 3600.0 + 46.0 * 60.0 + 48.0;     // Table I-5
 static const double A14_PDI = 108.0 * 3600.0 + 42.0 * 60.0 + 1.0;       // Table I-6
 static const double A14_LIFTOFF = 142.0 * 3600.0 + 24.0 * 60.0 + 29.0;  // Table I-6
 static const double A14_SEP = 146.0 * 3600.0 + 28.0 * 60.0 + 31.0;      // Table I-5
@@ -444,7 +449,7 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 		A14GiveUplink(upString, upDesc, uplinkdata, "CSM state vector, V66");
 	}
 	break;
-	case 24: //MCC-3 at Table I-5 / LOI-22h
+	case 24: //MCC-3 at LOI-22h. Techniques: under 3 fps is corrected at LOI
 	{
 		AP11ManPADOpt manopt;
 		VECTOR3 dV_LVLH, dv;
@@ -623,7 +628,7 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 		form->type = 2;
 	}
 	break;
-	case 31: //CSM SPS DOI. Table I-5 replaces LOI-2. HP 9.77 nm, 4-jet ullage 14 s
+	case 31: //CSM SPS DOI. Table I-5 HP 9.77 nm, 4-jet ullage 14 s. Mode 4 is DOI only
 	{
 		AP11ManPADOpt manopt;
 		double P30TIG;
@@ -636,8 +641,8 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 
 		sv = StateVectorCalc(calcParams.src);
 		WeightsTable = GetWeightsTable(calcParams.src, true, true);
-		med_k16.Mode = 2;
-		med_k16.Sequence = 3;
+		med_k16.Mode = 4;
+		med_k16.Sequence = 1;
 		med_k16.GETTH1 = A14_DOI;
 		med_k16.GETTH2 = med_k16.GETTH3 = med_k16.GETTH4 = med_k16.GETTH1;
 		med_k16.DesiredHeight = 9.77 * 1852.0;
@@ -794,17 +799,33 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 		A14GiveUplink(upString, upDesc, uplinkdata, "LM state vector, V66, clock, abort constants, LS REFSMMAT");
 	}
 	break;
-	case 37: //Undock/sep 104:27:31, 1 fps. Table I-5 does not give the LVLH axis
+	case 37: //Undock/sep 104:27:31. Flight plan note 5: radial, CSM below, sep immediate
 	{
-		calcParams.SEP = A14_SEP;
-		scrubbed = true;
-		A14Msg(upMessage, "A14 undock/sep 104:27:31 GET, 1 fps; LVLH axis not in Table I-5");
+		AP11ManPADOpt opt;
+		EphemerisData sv;
+		AP11MNV manpad;
+		AP12SEPPAD *form = (AP12SEPPAD *)pad;
+
+		// LVLH +Z points at the Moon. CSM below means the 1 fps sep is toward the Moon.
+		sv = StateVectorCalcEphem(calcParams.src);
+		calcParams.SEP = A14_UNDOCK;
+		opt.TIG = A14_UNDOCK;
+		opt.dV_LVLH = _V(0, 0, 1.0) * 0.3048;
+		opt.enginetype = RTCC_ENGINETYPE_CSMRCSPLUS4;
+		opt.HeadsUp = false;
+		opt.REFSMMAT = GetREFSMMATfromAGC(&mcc->cm->agc.vagc, true);
+		opt.RV_MCC = sv;
+		opt.WeightsTable = GetWeightsTable(calcParams.src, true, false);
+		AP11ManeuverPAD(opt, manpad);
+		form->t_Undock = A14_UNDOCK;
+		form->t_Separation = A14_UNDOCK;
+		form->Att_Undock = manpad.Att;
 	}
 	break;
 	case 38: //Apollo 12 LM DOI. Apollo 14 DOI is the docked CSM SPS burn
 	{
 		scrubbed = true;
-		A14Msg(upMessage, "No A14 LM DOI. CSM DOI is 86:56:57; circ 105:46:48, 72.46 fps, no LVLH");
+		A14Msg(upMessage, "No A14 LM DOI. CSM DOI is 86:56:57; CSM circ is 105:46:48");
 	}
 	break;
 	case 40: //No TEI-1 on Apollo 14
@@ -1090,7 +1111,7 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 		scrubbed = true;
 		A14Msg(upMessage, "No Apollo 14 PC-2 in the flight plan");
 		break;
-	case 110: //CSM sep 146:28:31, 1 fps retrograde. LVLH Z negative is the retrograde axis used for that remark
+	case 110: //CSM sep 146:28:31. Flight plan note 6 and the LM-impact note: 1 fps retrograde
 	{
 		AP11ManPADOpt opt;
 		EphemerisData sv;
@@ -1102,7 +1123,8 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 
 		sv = StateVectorCalcEphem(calcParams.src);
 		calcParams.SEP = A14_SEP;
-		dV_LVLH = _V(0, 0, -1.0) * 0.3048;
+		// LVLH +X is posigrade, so retrograde is -X. The note fires +Z thrusters in that attitude.
+		dV_LVLH = _V(-1.0, 0, 0) * 0.3048;
 		opt.TIG = A14_SEP;
 		opt.dV_LVLH = dV_LVLH;
 		opt.enginetype = RTCC_ENGINETYPE_CSMRCSPLUS4;
@@ -1113,7 +1135,7 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 		AP11ManeuverPAD(opt, *form);
 		sprintf(form->purpose, "SEP");
 		OrbMech::SStoHHMMSS(A14_SEP - 5.0 * 60.0, hh, mm, ss);
-		sprintf(form->remarks, "1 fps retrograde. Jettison 5 min earlier, %d:%02d:%02.0lf", hh, mm, ss);
+		sprintf(form->remarks, "1 fps retrograde, +Z thrusters. Jettison radial, %d:%02d:%02.0lf", hh, mm, ss);
 		form->type = 2;
 		TimeofIgnition = A14_SEP;
 		DeltaV_LVLH = dV_LVLH;
@@ -1123,19 +1145,56 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 		A14GiveUplink(upString, upDesc, uplinkdata, "CSM state vector, V66");
 	}
 	break;
-	case 111:
-	case 112:
+	case 111: //LM deorbit. Note: 180 fps retrograde, 36.5 fps north, TIG 147:52:58.9
+	case 112: //CSM P76 for that burn
+	{
+		// LVLH +X is posigrade and +Y is north on this westward lunar orbit.
+		DeltaV_LVLH = _V(-180.0, 36.5, 0.0) * 0.3048;
 		TimeofIgnition = A14_DEORBIT;
-		DeltaV_LVLH = _V(0, 0, 0);
-		scrubbed = true;
-		A14Msg(upMessage, "A14 LM deorbit 147:52:59 GET, 183.7 fps; LVLH not in Table I-6");
-		break;
+
+		if (fcn == 111)
+		{
+			AP11LMManPADOpt opt;
+			SV sv;
+			char buffer1[1000];
+			char buffer2[1000];
+			AP11LMMNV *form = (AP11LMMNV *)pad;
+
+			sv = StateVectorCalc(calcParams.tgt);
+			opt.TIG = A14_DEORBIT;
+			opt.dV_LVLH = DeltaV_LVLH;
+			opt.enginetype = RTCC_ENGINETYPE_LMRCSPLUS4;
+			opt.HeadsUp = false;
+			opt.REFSMMAT = GetREFSMMATfromAGC(&mcc->lm->agc.vagc, false);
+			opt.RV_MCC = ConvertSVtoEphemData(sv);
+			opt.WeightsTable = GetWeightsTable(calcParams.tgt, false, false);
+			AP11LMManeuverPAD(opt, *form);
+			sprintf(form->purpose, "LM DEORBIT");
+			sprintf(form->remarks, "180 retrograde, 36.5 north. Impact 3.5S 19.27W. P99");
+			AGCStateVectorUpdate(buffer1, sv, false);
+			LGCExternalDeltaVUpdate(buffer2, A14_DEORBIT, DeltaV_LVLH);
+			sprintf(uplinkdata, "%s%s", buffer1, buffer2);
+			A14GiveUplink(upString, upDesc, uplinkdata, "LM state vector, Target load");
+		}
+		else
+		{
+			AP11P76PAD *form = (AP11P76PAD *)pad;
+
+			form->entries = 1;
+			sprintf(form->purpose[0], "CSM P76");
+			form->TIG[0] = A14_DEORBIT;
+			form->DV[0] = DeltaV_LVLH / 0.3048;
+		}
+	}
+	break;
 	case 120:
 	case 121:
 	case 122:
 	case 123:
+		// The impact note calls P99 with V30E. Those octal loads embed one planning
+		// state vector, so they are not uplinked on the live trajectory.
 		scrubbed = true;
-		A14Msg(upMessage, "A14 LM deorbit DSKY commands not in the flight plan");
+		A14Msg(upMessage, "A14 deorbit is P99 (V30E). Planning octals are not uplinked");
 		break;
 	case 130:
 	case 131:
@@ -1220,7 +1279,9 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 			}
 		}
 
-		if (MCCtime > res.GET400K - 50.0 * 3600.0)
+		// 71-FM54-41: the MCC-5 execution threshold is 1 fps. MCC-6/MCC-7 keep the
+		// Apollo 11 mission-rule split already used for the H missions.
+		if (fcn == 210 || MCCtime > res.GET400K - 50.0 * 3600.0)
 		{
 			if (length(res.dV_LVLH) < 1.0 * 0.3048) scrubbed = true;
 		}
@@ -1348,17 +1409,64 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 	case 500:
 		break;
 	case 501:
-		A14Msg(upMessage, "GET sync if clock error exceeds 1 minute. Press kit: about 55 hours.");
+		A14Msg(upMessage, "GET sync if error exceeds 1 min. Flown -40 min was the launch hold.");
 		break;
-	case 502:
-		A14Msg(upMessage, "A14 circ 105:46:48 GET, 72.46 fps; LVLH not in Table I-5");
-		break;
+	case 502: //Circ 105:46:48. Table I-5 HP 56.04 nm, 4-jet ullage 11 s
+	{
+		AP11ManPADOpt manopt;
+		SV sv, sv_tig;
+		VECTOR3 dV_iner, dV_LVLH;
+		MATRIX3 Q_Xx;
+		double P30TIG, dt, r_peri;
+		PLAWDTOutput WeightsTable;
+		char buffer1[1000];
+		char buffer2[1000];
+		AP11MNV *form = (AP11MNV *)pad;
+
+		sv = StateVectorCalc(calcParams.src);
+		WeightsTable = GetWeightsTable(calcParams.src, true, false);
+		dt = A14_CIRC - OrbMech::GETfromMJD(sv.MJD, CalcGETBase());
+		sv_tig = coast(sv, dt);
+		r_peri = BZLAND.rad[RTCC_LMPOS_BEST] + 56.04 * 1852.0;
+		dV_iner = OrbMech::AdjustPeriapsis(sv_tig.R, sv_tig.V, OrbMech::mu_Moon, r_peri);
+		Q_Xx = OrbMech::LVLH_Matrix(sv_tig.R, sv_tig.V);
+		dV_LVLH = mul(Q_Xx, dV_iner);
+
+		if (length(dV_LVLH) < 1.0)
+		{
+			scrubbed = true;
+			A14Msg(upMessage, "A14 circ 105:46:48 GET, HP 56.04 nm; targeting failed");
+			AGCStateVectorUpdate(buffer1, sv, true, true);
+			sprintf(uplinkdata, "%s", buffer1);
+			A14GiveUplink(upString, upDesc, uplinkdata, "CSM state vector, V66");
+		}
+		else
+		{
+			PoweredFlightProcessor(sv, A14_CIRC, RTCC_ENGINETYPE_CSMSPS, 0.0, dV_LVLH, true, P30TIG, dV_LVLH);
+			manopt.TIG = P30TIG;
+			manopt.dV_LVLH = dV_LVLH;
+			manopt.enginetype = RTCC_ENGINETYPE_CSMSPS;
+			manopt.HeadsUp = false;
+			manopt.REFSMMAT = GetREFSMMATfromAGC(&mcc->cm->agc.vagc, true);
+			manopt.RV_MCC = ConvertSVtoEphemData(sv);
+			manopt.WeightsTable = WeightsTable;
+			AP11ManeuverPAD(manopt, *form);
+			sprintf(form->purpose, "CIRC");
+			sprintf(form->remarks, "Ullage: 4 jet, 11 seconds");
+			TimeofIgnition = P30TIG;
+			DeltaV_LVLH = dV_LVLH;
+			AGCStateVectorUpdate(buffer1, sv, true, true);
+			CMCExternalDeltaVUpdate(buffer2, P30TIG, dV_LVLH);
+			sprintf(uplinkdata, "%s%s", buffer1, buffer2);
+			A14GiveUplink(upString, upDesc, uplinkdata, "CSM state vector, V66, Target load");
+		}
+	}
+	break;
 	default:
-		// Live SV, DAP, TLI from the Apollo 14 TLI file, maps, LOI from the SFP,
-		// PDI/ascent solved at Fra Mauro, PTC quads, and the H1 descent geometry
-		// where Apollo 14 tables do not give a replacement constant.
-		// Update 11 still uses the Apollo 12 separation attitude; no A14 attitude
-		// was in the tables. Updates 100/105/106 solve liftoff from the CSM state.
+		// Live SV, DAP, TLI from the Apollo 14 TLI file, maps, and LOI from the SFP.
+		// 71-FM62-28 confirms the delegated TPI offsets: 15 nm below, elevation 26.6 deg.
+		// The padload RLS matches the Fra Mauro SFP site. Update 11 still uses the
+		// Apollo 12 separation attitude; these documents do not give an A14 attitude.
 		return CalculationMTP_H1(fcn, pad, upString, upDesc, upMessage);
 	}
 
