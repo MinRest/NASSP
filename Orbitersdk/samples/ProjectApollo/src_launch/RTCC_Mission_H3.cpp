@@ -86,6 +86,26 @@ static void A14GiveUplink(char *upString, char *upDesc, const char *data, const 
 	}
 }
 
+// TLI burnout is maneuver 0. H1 also stored a post-TLI separation burn in maneuver 1.
+// Apollo 14 does not: that burn carried the unpublished Apollo 12 attitude.
+// mantable is a deque, so an index past ManeuverNum is an access violation.
+static bool A14MPTBurnout(const MissionPlanTable &mpt, unsigned index, double gmtbase, SV &sv)
+{
+	if (index >= mpt.ManeuverNum || index >= mpt.mantable.size())
+		return false;
+
+	const MPTManeuver &man = mpt.mantable[index];
+	// S-IVB TLI leaves CSMMass at the preburn CSM weight. Stack mass is not a CSM pad weight.
+	if (man.CommonBlock.CSMMass <= 0.0 || length(man.R_BO) < 1.0)
+		return false;
+
+	sv.mass = man.CommonBlock.CSMMass;
+	sv.MJD = OrbMech::MJDfromGET(man.GMT_BO, gmtbase);
+	sv.R = man.R_BO;
+	sv.V = man.V_BO;
+	return true;
+}
+
 static void A14P37Line(RTCC *rtcc, EntryOpt &entopt, P37PAD *form, int i, const SV &sv, double tig, double tz)
 {
 	EntryResults res;
@@ -158,6 +178,12 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 		// The H1 calculator inserts an inertial separation attitude of
 		// 48.6, -130.9, -139.1 deg. The A14 flight plan, AS-509 operational
 		// trajectory (19710005842), and MSC-04112 do not print that attitude.
+		// Only the TLI burn is stored, so later pads must use mantable[0].
+		if (PZMPTCSM.ManeuverNum < 1 || PZMPTCSM.mantable.empty())
+		{
+			A14Msg(upMessage, "A14 TLI sim failed: no TLI maneuver in the MPT");
+			break;
+		}
 		TimeofIgnition = GETfromGMT(PZMPTCSM.mantable[0].GMT_BI);
 		calcParams.TLI = GETfromGMT(PZMPTCSM.mantable[0].GMT_BO);
 		A14Msg(upMessage, "A14 TLI sim. Post-TLI sep attitude is not published; Apollo 12 angles are not used.");
@@ -177,11 +203,15 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 
 		sv = StateVectorCalcEphem(calcParams.src);
 
-		sv1.mass = PZMPTCSM.mantable[1].CommonBlock.CSMMass;
+		// Pad is passed at 1:40, before TLI, so the live CSM state is still in earth orbit.
+		// The predicted vector is TLI burnout. There is no second maneuver.
+		if (!A14MPTBurnout(PZMPTCSM, 0, SystemParameters.GMTBASE, sv1))
+		{
+			scrubbed = true;
+			A14Msg(upMessage, "TLI+90 skipped: no TLI burnout in the MPT");
+			break;
+		}
 		sv1.gravref = hEarth;
-		sv1.MJD = OrbMech::MJDfromGET(PZMPTCSM.mantable[1].GMT_BO, SystemParameters.GMTBASE);
-		sv1.R = PZMPTCSM.mantable[1].R_BO;
-		sv1.V = PZMPTCSM.mantable[1].V_BO;
 
 		entopt.entrylongmanual = false;
 		entopt.ATPLine = 2; //Table I-7 note 1: TLI+90 is AOL
@@ -208,10 +238,10 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 		form->lng = res.longitude * DEG;
 		form->RTGO = res.RTGO;
 		form->VI0 = res.VIO / 0.3048;
-		form->Weight = PZMPTCSM.mantable[1].CommonBlock.CSMMass / 0.45359237;
+		form->Weight = sv1.mass / 0.45359237;
 		form->GET05G = res.GET05G;
 		sprintf(form->purpose, "TLI+90");
-		sprintf(form->remarks, "AOL, GETI 4:00");
+		sprintf(form->remarks, "AOL, GETI 4:00, TLI burnout SV");
 
 		GMTSV = PZMPTCSM.TimeToBeginManeuver[0] - 10.0 * 60.0;
 		sv_uplink = coast(sv, GMTSV - sv.GMT, RTCC_MPT_CSM);
@@ -224,12 +254,25 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 	{
 		TLIPAD *form = (TLIPAD *)pad;
 
+		if (PZMPTCSM.ManeuverNum < 1 || PZMPTCSM.mantable.empty())
+		{
+			scrubbed = true;
+			A14Msg(upMessage, "TLI pad skipped: no TLI maneuver in the MPT");
+			break;
+		}
+
 		GMGMED("U20,CSM,1;");
 		// TB6 starts 9 min 38 s before TLI ignition. That lead is the S-IVB timebase, not an attitude.
 		form->TB6P = DMTBuffer[0].GETI - 9.0 * 60.0 - 38.0;
 		form->IgnATT = DMTBuffer[0].IMUAtt;
 		form->BurnTime = DMTBuffer[0].DT_B;
 		form->dVC = DMTBuffer[0].DVC;
+		if (PZMPTCSM.mantable.empty())
+		{
+			scrubbed = true;
+			A14Msg(upMessage, "TLI pad skipped: TLI maneuver was not in the MPT");
+			break;
+		}
 		form->VI = length(PZMPTCSM.mantable[0].V_BO) / 0.3048;
 		form->type = 0;
 		sprintf(form->remarks, "SEP/EXT attitude omitted; not in the A14 flight plan");
@@ -244,11 +287,13 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 		SV sv1;
 		P37PAD *form = (P37PAD *)pad;
 
-		sv1.mass = PZMPTCSM.mantable[1].CommonBlock.CSMMass;
+		if (!A14MPTBurnout(PZMPTCSM, 0, SystemParameters.GMTBASE, sv1))
+		{
+			scrubbed = true;
+			A14Msg(upMessage, "L/O+8 skipped: no TLI burnout in the MPT");
+			break;
+		}
 		sv1.gravref = hEarth;
-		sv1.MJD = OrbMech::MJDfromGET(PZMPTCSM.mantable[1].GMT_BO, SystemParameters.GMTBASE);
-		sv1.R = PZMPTCSM.mantable[1].R_BO;
-		sv1.V = PZMPTCSM.mantable[1].V_BO;
 
 		entopt.entrylongmanual = false;
 		entopt.ATPLine = 0;
