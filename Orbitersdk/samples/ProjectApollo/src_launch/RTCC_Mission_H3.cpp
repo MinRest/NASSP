@@ -31,73 +31,233 @@ See http://nassp.sourceforge.net/license/ for more details.
 #include "mcc.h"
 #include "rtcc.h"
 
-// Apollo 14 update codes that would copy Apollo 12 flight-plan constants
-// (abort/block-data TIGs, PTC epoch, fixed TEI revolutions, landmark and
-// photography targets, the Descartes plane-change site, the LM deorbit
-// delta-V, or the hard-coded photography REFSMMAT). Returning true makes
-// PAD macros drop the pad. Uplink-only script states for 18, 120-123, and
-// 131 are UTP_NONE, so this message is shown and nothing is uplinked.
-static void A14FlightPlanGap(int fcn, char* upMessage)
+// Planned GET from the Apollo 14 final flight plan, 18 January 1971 (HSI-209261).
+// Delta-V is solved on the live trajectory. Preflight delta-V is not copied in.
+// MCC-3/MCC-4 GETIs are LOI minus 22 h and 5 h. The flight-plan LOI GETI is
+// 82:38:14, and the LOI-5 flyby column prints 77:38.
+
+static double A14SS(int h, int m, double s)
+{
+	return OrbMech::HHMMSSToSS((double)h, (double)m, s);
+}
+
+static const double A14_LOI = 82.0 * 3600.0 + 38.0 * 60.0 + 14.0;       // Table I-5
+static const double A14_MCC1 = 11.0 * 3600.0 + 36.0 * 60.0 + 33.0;      // Table I-5
+static const double A14_MCC2 = 30.0 * 3600.0 + 36.0 * 60.0 + 7.0;       // Table I-5
+static const double A14_MCC3 = 60.0 * 3600.0 + 38.0 * 60.0 + 14.0;      // LOI-22h
+static const double A14_MCC4 = 77.0 * 3600.0 + 38.0 * 60.0 + 14.0;      // LOI-5h
+static const double A14_DOI = 86.0 * 3600.0 + 56.0 * 60.0 + 57.0;       // Table I-5
+static const double A14_PDI = 108.0 * 3600.0 + 42.0 * 60.0 + 1.0;       // Table I-6
+static const double A14_LIFTOFF = 142.0 * 3600.0 + 24.0 * 60.0 + 29.0;  // Table I-6
+static const double A14_SEP = 146.0 * 3600.0 + 28.0 * 60.0 + 31.0;      // Table I-5
+static const double A14_DEORBIT = 147.0 * 3600.0 + 52.0 * 60.0 + 58.9;  // Table I-6
+static const double A14_TEI = 149.0 * 3600.0 + 14.0 * 60.0 + 50.0;      // Table I-5
+static const double A14_MCC5 = 166.0 * 3600.0 + 14.0 * 60.0 + 50.0;     // Table I-5
+static const double A14_MCC6 = 194.0 * 3600.0 + 26.0 * 60.0 + 59.0;     // Table I-5
+static const double A14_MCC7 = 213.0 * 3600.0 + 26.0 * 60.0 + 59.0;     // Table I-5
+static const double A14_EOM_LNG = -171.53 * RAD;                        // 1971-01-31 Init.txt
+
+static void A14Msg(char *upMessage, const char *text)
 {
 	if (upMessage != NULL)
 	{
-		sprintf(upMessage, "A14 update %d scrubbed: no flight-plan data", fcn);
+		sprintf(upMessage, "%s", text);
 	}
 }
 
-bool RTCC::CalculationMTP_H3(int fcn, LPVOID& pad, char* upString, char* upDesc, char* upMessage)
+static void A14GiveUplink(char *upString, char *upDesc, const char *data, const char *desc)
+{
+	if (upString != NULL)
+	{
+		strncpy(upString, data, 1024 * 3);
+		upString[1024 * 3 - 1] = 0;
+		if (upDesc != NULL && desc != NULL)
+		{
+			sprintf(upDesc, "%s", desc);
+		}
+	}
+}
+
+static void A14P37Line(RTCC *rtcc, EntryOpt &entopt, P37PAD *form, int i, const SV &sv, double tig, double tz)
+{
+	EntryResults res;
+
+	entopt.TIGguess = form->GETI[i] = tig;
+	entopt.t_Z = tz;
+	entopt.RV_MCC = sv;
+	rtcc->EntryTargeting(entopt, res);
+	form->dVT[i] = length(res.dV_LVLH) / 0.3048;
+	form->GET400K[i] = res.GET05G;
+	form->lng[i] = round(res.longitude * DEG);
+}
+
+static void A14Landmark(LMARKTRKPADOpt &opt, AP11LMARKTRKPAD *form, int i, const char *name, double lat_deg, double lng_deg, double alt_nm, double get)
+{
+	// Table I-10 altitude is the difference from mean lunar radius 938.4935 nm,
+	// which matches OrbMech::R_Moon. South and west are negative.
+	sprintf(form->LmkID[i], "%s", name);
+	opt.lat[i] = lat_deg * RAD;
+	opt.lng[i] = lng_deg * RAD;
+	opt.alt[i] = alt_nm * 1852.0;
+	opt.LmkTime[i] = get;
+}
+
+bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc, char *upMessage)
 {
 	char uplinkdata[1024 * 3];
 	bool scrubbed = false;
 
+	// Flight-plan anchors used before the solved values exist. A later successful
+	// solution overwrites them. Do not overwrite a value the processor already set.
+	if (calcParams.LOI <= 0.0) calcParams.LOI = A14_LOI;
+	if (calcParams.DOI <= 0.0) calcParams.DOI = A14_DOI;
+	if (calcParams.PDI <= 0.0) calcParams.PDI = A14_PDI;
+	if (calcParams.LunarLiftoff <= 0.0) calcParams.LunarLiftoff = A14_LIFTOFF;
+	if (calcParams.SEP <= 0.0) calcParams.SEP = A14_SEP;
+
 	switch (fcn)
 	{
-	case 12: //TLI+90, Apollo 12 t_Z
-	case 13: //Liftoff+8, Apollo 12 TIG and t_Z
-	case 16: //Block data 1, Apollo 12 TIGs
-	case 17: //Block data 2, Apollo 12 TIGs
-	case 18: //PTC REFSMMAT, Apollo 12 absolute MJD
-	case 40: //TEI-1 fixed revolution
-	case 41:
-	case 42:
-	case 43:
-	case 44:
-	case 45:
-	case 46:
-	case 47:
-	case 48:
-	case 49: //TEI-45 preliminary. Final/next-rev (50, 51) use the live revolution.
-	case 61: //Landmark pads with Apollo 12 coordinates
-	case 62:
-	case 63:
-	case 64:
-	case 65:
-	case 95: //Plane change 2 writes Descartes into BZLAND
-	case 110: //SEP / LM jettison, Apollo 12 times and delta-V
-	case 111: //LM deorbit, Apollo 12 delta-V
-	case 112: //P76 for that deorbit
-	case 120: //P42 / PRO / ENTER / ullage-off for that deorbit
-	case 121:
-	case 122:
-	case 123:
-	case 130: //Photography REFSMMAT, Apollo 12 matrix
-	case 131:
-	case 602: //Named Apollo 12 photo targets
-	case 603:
-	case 604:
-	case 605:
-	case 607:
-	case 608:
-		A14FlightPlanGap(fcn, upMessage);
-		return true;
+	case 12: //TLI+90. Table I-7: GETI 4:00, GETIL 12:12, AOL
+	{
+		EntryOpt entopt;
+		EntryResults res;
+		AP11ManPADOpt opt;
+		double GMTSV;
+		EphemerisData sv, sv_uplink;
+		SV sv1;
+		char buffer1[1000];
 
+		AP11MNV *form = (AP11MNV *)pad;
+
+		sv = StateVectorCalcEphem(calcParams.src);
+
+		sv1.mass = PZMPTCSM.mantable[1].CommonBlock.CSMMass;
+		sv1.gravref = hEarth;
+		sv1.MJD = OrbMech::MJDfromGET(PZMPTCSM.mantable[1].GMT_BO, SystemParameters.GMTBASE);
+		sv1.R = PZMPTCSM.mantable[1].R_BO;
+		sv1.V = PZMPTCSM.mantable[1].V_BO;
+
+		entopt.entrylongmanual = false;
+		entopt.ATPLine = 2; //Table I-7 note 1: TLI+90 is AOL
+		entopt.enginetype = RTCC_ENGINETYPE_CSMSPS;
+		entopt.TIGguess = A14SS(4, 0, 0.0);
+		entopt.t_Z = A14SS(12, 12, 0.0);
+		entopt.type = 1;
+		entopt.vessel = calcParams.src;
+		entopt.RV_MCC = sv1;
+
+		EntryTargeting(entopt, res);
+
+		opt.TIG = res.P30TIG;
+		opt.dV_LVLH = res.dV_LVLH;
+		opt.enginetype = RTCC_ENGINETYPE_CSMSPS;
+		opt.HeadsUp = true;
+		opt.REFSMMAT = GetREFSMMATfromAGC(&mcc->cm->agc.vagc, true);
+		opt.RV_MCC = ConvertSVtoEphemData(sv1);
+		opt.WeightsTable.CC[RTCC_CONFIG_C] = true;
+		opt.WeightsTable.ConfigWeight = opt.WeightsTable.CSMWeight = sv1.mass;
+
+		AP11ManeuverPAD(opt, *form);
+		form->lat = res.latitude * DEG;
+		form->lng = res.longitude * DEG;
+		form->RTGO = res.RTGO;
+		form->VI0 = res.VIO / 0.3048;
+		form->Weight = PZMPTCSM.mantable[1].CommonBlock.CSMMass / 0.45359237;
+		form->GET05G = res.GET05G;
+		sprintf(form->purpose, "TLI+90");
+		sprintf(form->remarks, "AOL, GETI 4:00");
+
+		GMTSV = PZMPTCSM.TimeToBeginManeuver[0] - 10.0 * 60.0;
+		sv_uplink = coast(sv, GMTSV - sv.GMT, RTCC_MPT_CSM);
+		AGCStateVectorUpdate(buffer1, RTCC_MPT_CSM, RTCC_MPT_CSM, sv_uplink, true);
+		sprintf(uplinkdata, "%s", buffer1);
+		A14GiveUplink(upString, upDesc, uplinkdata, "CSM state vector, V66");
+	}
+	break;
+	case 13: //L/O+8. Table I-7: GETI 8:00, GETIL 46:29, MPL
+	{
+		EntryOpt entopt;
+		SV sv1;
+		P37PAD *form = (P37PAD *)pad;
+
+		sv1.mass = PZMPTCSM.mantable[1].CommonBlock.CSMMass;
+		sv1.gravref = hEarth;
+		sv1.MJD = OrbMech::MJDfromGET(PZMPTCSM.mantable[1].GMT_BO, SystemParameters.GMTBASE);
+		sv1.R = PZMPTCSM.mantable[1].R_BO;
+		sv1.V = PZMPTCSM.mantable[1].V_BO;
+
+		entopt.entrylongmanual = false;
+		entopt.ATPLine = 0;
+		entopt.enginetype = RTCC_ENGINETYPE_CSMSPS;
+		entopt.type = 1;
+		entopt.vessel = calcParams.src;
+		A14P37Line(this, entopt, form, 0, sv1, A14SS(8, 0, 0.0), A14SS(46, 29, 0.0));
+	}
+	break;
+	case 16: //L/O+15, passed at 6:00. Table I-7: GETI 15:00, GETIL 45:56
+	{
+		EntryOpt entopt;
+		SV sv1;
+		P37PAD *form = (P37PAD *)pad;
+
+		sv1 = StateVectorCalc(calcParams.src);
+		entopt.entrylongmanual = false;
+		entopt.ATPLine = 0;
+		entopt.enginetype = RTCC_ENGINETYPE_CSMSPS;
+		entopt.type = 1;
+		entopt.vessel = calcParams.src;
+		A14P37Line(this, entopt, form, 0, sv1, A14SS(15, 0, 0.0), A14SS(45, 56, 0.0));
+	}
+	break;
+	case 17: //Block data 2, passed at 14:00. Table I-7 L/O+25, +35, +45, +60
+	{
+		EntryOpt entopt;
+		SV sv1, sv2;
+		P37PAD *form = (P37PAD *)pad;
+
+		sv1 = StateVectorCalc(calcParams.src);
+		if (length(DeltaV_LVLH) > 0.0)
+		{
+			sv2 = ExecuteManeuver(sv1, TimeofIgnition, DeltaV_LVLH, GetDockedVesselMass(calcParams.src), RTCC_ENGINETYPE_CSMSPS);
+		}
+		else
+		{
+			sv2 = sv1;
+		}
+
+		entopt.entrylongmanual = false;
+		entopt.ATPLine = 0;
+		entopt.enginetype = RTCC_ENGINETYPE_CSMSPS;
+		entopt.type = 1;
+		entopt.vessel = calcParams.src;
+
+		// L/O+35 assumes MCC-2, which has not been solved at the 14:00 pass.
+		// Both solutions use the post-MCC-1 trajectory when that burn exists.
+		A14P37Line(this, entopt, form, 0, sv2, A14SS(25, 0, 0.0), A14SS(70, 3, 0.0));
+		A14P37Line(this, entopt, form, 1, sv2, A14SS(35, 0, 0.0), A14SS(69, 28, 0.0));
+		A14P37Line(this, entopt, form, 2, sv2, A14SS(45, 0, 0.0), A14SS(93, 49, 0.0));
+		A14P37Line(this, entopt, form, 3, sv2, A14SS(60, 0, 0.0), A14SS(117, 53, 0.0));
+	}
+	break;
+	case 18: //PTC REFSMMAT. Section E; epoch is Table I-5 TEI, not the window average
+	{
+		char buffer[1000];
+		REFSMMATOpt refsopt;
+		MATRIX3 REFSMMAT;
+
+		refsopt.REFSMMATopt = 6;
+		refsopt.REFSMMATTime = OrbMech::MJDfromGET(A14_TEI, CalcGETBase());
+		REFSMMAT = REFSMMATCalc(&refsopt);
+		AGCDesiredREFSMMATUpdate(buffer, REFSMMAT);
+		sprintf(uplinkdata, "%s", buffer);
+		A14GiveUplink(upString, upDesc, uplinkdata, "PTC REFSMMAT");
+	}
+	break;
 	case 19: //MCC-1 evaluation
 	case 21: //MCC-1 update
 	case 20: //MCC-2 evaluation
 	case 22: //MCC-2 update
 	{
-		// Same translunar midcourse processor as Mission H1. The LOI anchor is
-		// the Apollo 14 skeleton flight plan, not the Apollo 12 ignition GET.
 		double P30TIG, MCC1GET, MCC2GET, F23time;
 		int engine, mccnum;
 		VECTOR3 dV_LVLH;
@@ -107,38 +267,14 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID& pad, char* upString, char* upDesc,
 		int hh, mm;
 		double ss;
 
-		double dt_lls = PZSFPTAB.blocks[0].dt_lls;
-		if (dt_lls <= 0.0)
-		{
-			dt_lls = PZSFPTAB.blocks[1].dt_lls;
-		}
-
-		// dt_lls is time from LOI to landing on the SFP card. Subtracting it
-		// from the launch-day TLAND (1971-01-31 Init.txt, also RTCC_TLAND in
-		// the scenario) is the SFP pericynthion GET, not a published LOI TIG.
-		// TODO(A14): replace LOIFP with a sourced LOI ignition GET.
-		if (CZTDTGTU.GETTD <= 0.0 || dt_lls <= 0.0)
-		{
-			if (upMessage != NULL)
-			{
-				sprintf(upMessage, "A14 MCC scrubbed: SFP LOI time missing");
-			}
-			return true;
-		}
-		double LOIFP = CZTDTGTU.GETTD - dt_lls;
-
 		bool IterateNodeGET = false;
-		if (SystemParameters.MCLABN < 77.0 * RAD && calcParams.TLI < OrbMech::HHMMSSToSS(3, 0, 0))
+		if (SystemParameters.MCLABN < 77.0 * RAD && calcParams.TLI < A14SS(3, 0, 0.0))
 		{
 			IterateNodeGET = true;
 		}
 
-		// TODO(A14): TLI ignition + 9h / + 28h are the Apollo 12 script offsets.
-		// The mission script waits on the same offsets, so the burn and the
-		// timeline stay together. They are not a sourced Apollo 14 MCC schedule.
-		double TLIbase = calcParams.TLI - 5.0 * 60.0 - 20.0;
-		MCC1GET = TLIbase + 9.0 * 3600.0;
-		MCC2GET = TLIbase + 28.0 * 3600.0;
+		MCC1GET = A14_MCC1;
+		MCC2GET = A14_MCC2;
 
 		sv = StateVectorCalcEphem(calcParams.src);
 		WeightsTable = GetWeightsTable(calcParams.src, true, true);
@@ -151,15 +287,14 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID& pad, char* upString, char* upDesc,
 
 		sprintf_s(Buff, "F23,0.0:0.0:0.0,0.0:0.0:0.0;");
 		GMGMED(Buff);
-
 		TranslunarMidcourseCorrectionProcessor(sv, WeightsTable.CSMWeight, WeightsTable.LMAscWeight + WeightsTable.LMDscWeight);
 
 		if (IterateNodeGET)
 		{
 			bool init = true;
 			int n = 0;
-			F23time = LOIFP - 11.0 * 60.0;
-			while ((PZMCCDIS.data[0].GET_LOI < LOIFP - 5.0 || init) && n < 400)
+			F23time = A14_LOI - 11.0 * 60.0;
+			while ((PZMCCDIS.data[0].GET_LOI < A14_LOI - 5.0 || init) && n < 400)
 			{
 				OrbMech::SStoHHMMSS(F23time, hh, mm, ss, 0.01);
 				sprintf_s(Buff, "F23,%d:%d:%.2lf,%d:%d:%.2lf;", hh, mm, ss, hh, mm + 10, ss);
@@ -174,7 +309,6 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID& pad, char* upString, char* upDesc,
 		if (fcn == 19 || fcn == 21)
 		{
 			mccnum = 1;
-
 			if (length(PZMCCDIS.data[0].DV_MCC) < 120.0 * 0.3048)
 			{
 				scrubbed = true;
@@ -182,15 +316,13 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID& pad, char* upString, char* upDesc,
 			else
 			{
 				PZMCCPLN.MidcourseGET = MCC1GET;
-
 				TranslunarMidcourseCorrectionProcessor(sv, WeightsTable.CSMWeight, WeightsTable.LMAscWeight + WeightsTable.LMDscWeight);
-
 				if (IterateNodeGET)
 				{
 					bool init = true;
 					int n = 0;
-					F23time = LOIFP - 11.0 * 60.0;
-					while ((PZMCCDIS.data[0].GET_LOI < LOIFP - 5.0 || init) && n < 400)
+					F23time = A14_LOI - 11.0 * 60.0;
+					while ((PZMCCDIS.data[0].GET_LOI < A14_LOI - 5.0 || init) && n < 400)
 					{
 						OrbMech::SStoHHMMSS(F23time, hh, mm, ss, 0.01);
 						sprintf_s(Buff, "F23,%d:%d:%.2lf,%d:%d:%.2lf;", hh, mm, ss, hh, mm + 10, ss);
@@ -206,7 +338,6 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID& pad, char* upString, char* upDesc,
 		else
 		{
 			mccnum = 2;
-
 			if (length(PZMCCDIS.data[0].DV_MCC) < 1.0 * 0.3048)
 			{
 				scrubbed = true;
@@ -219,8 +350,7 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID& pad, char* upString, char* upDesc,
 		}
 		else
 		{
-			// Keep later LOI-relative states from firing immediately.
-			calcParams.LOI = LOIFP;
+			calcParams.LOI = A14_LOI;
 			scrubbed = true;
 		}
 		GMGMED("F30,1;");
@@ -229,7 +359,6 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID& pad, char* upString, char* upDesc,
 		{
 			engine = mcc->mcc_calcs.SPSRCSDecision(SPS_THRUST / WeightsTable.ConfigWeight, PZMCCDIS.data[0].DV_MCC);
 			PoweredFlightProcessor(sv, WeightsTable.CSMWeight, PZMCCPLN.MidcourseGET, engine, WeightsTable.LMAscWeight + WeightsTable.LMDscWeight, PZMCCXFR.V_man_after[0] - PZMCCXFR.sv_man_bef[0].V, false, P30TIG, dV_LVLH);
-
 			TimeofIgnition = P30TIG;
 			DeltaV_LVLH = dV_LVLH;
 		}
@@ -243,30 +372,17 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID& pad, char* upString, char* upDesc,
 			if (scrubbed)
 			{
 				char buffer1[1000];
-
-				if (upMessage != NULL)
-				{
-					sprintf(upMessage, "MCC-%d has been scrubbed.", mccnum);
-				}
-				if (upDesc != NULL)
-				{
-					sprintf(upDesc, "CSM state vector, V66");
-				}
-
+				A14Msg(upMessage, mccnum == 1 ? "MCC-1 has been scrubbed." : "MCC-2 has been scrubbed.");
 				AGCStateVectorUpdate(buffer1, RTCC_MPT_CSM, RTCC_MPT_CSM, sv, true);
-
 				sprintf(uplinkdata, "%s", buffer1);
-				if (upString != NULL) {
-					strncpy(upString, uplinkdata, 1024 * 3);
-				}
+				A14GiveUplink(upString, upDesc, uplinkdata, "CSM state vector, V66");
 			}
 			else
 			{
 				char buffer1[1000];
 				char buffer2[1000];
 				AP11ManPADOpt manopt;
-
-				AP11MNV* form = (AP11MNV*)pad;
+				AP11MNV *form = (AP11MNV *)pad;
 
 				manopt.TIG = P30TIG;
 				manopt.dV_LVLH = dV_LVLH;
@@ -275,30 +391,291 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID& pad, char* upString, char* upDesc,
 				manopt.REFSMMAT = GetREFSMMATfromAGC(&mcc->cm->agc.vagc, true);
 				manopt.RV_MCC = sv;
 				manopt.WeightsTable = WeightsTable;
-
 				AP11ManeuverPAD(manopt, *form);
 				sprintf(form->purpose, "MCC-%d", mccnum);
 				sprintf(form->remarks, "LM weight is %.0f.", form->LMWeight);
-
 				AGCStateVectorUpdate(buffer1, RTCC_MPT_CSM, RTCC_MPT_CSM, sv, true);
 				CMCExternalDeltaVUpdate(buffer2, P30TIG, dV_LVLH);
-
 				sprintf(uplinkdata, "%s%s", buffer1, buffer2);
-				if (upString != NULL) {
-					strncpy(upString, uplinkdata, 1024 * 3);
-					if (upDesc != NULL)
-					{
-						sprintf(upDesc, "CSM state vector, V66, Target load");
-					}
-				}
+				A14GiveUplink(upString, upDesc, uplinkdata, "CSM state vector, V66, Target load");
 			}
 		}
 	}
 	break;
-	case 32: //State vector and landing-site REFSMMAT
+	case 23: //Lunar flyby. Table I-7: GETI 77:38, GETIL 165:57, docked, MPL
 	{
-		// The Apollo 12 update writes the Surveyor site here. Apollo 14 keeps
-		// the SFP site already stored in BZLAND[RTCC_LMPOS_BEST] by F62.
+		RTEMoonOpt entopt;
+		EntryResults res;
+		AP11ManPADOpt opt;
+		SV sv;
+		PLAWDTOutput WeightsTable;
+		char buffer1[1000];
+		AP11MNV *form = (AP11MNV *)pad;
+
+		sv = StateVectorCalc(calcParams.src);
+		WeightsTable = GetWeightsTable(calcParams.src, true, true);
+		entopt.SMODE = 14;
+		entopt.RV_MCC = sv;
+		entopt.TIGguess = A14SS(77, 38, 0.0);
+		entopt.vessel = calcParams.src;
+		entopt.t_zmin = A14SS(165, 57, 0.0);
+		entopt.entrylongmanual = false;
+		entopt.ATPLine = 0;
+		entopt.csmlmdocked = true;
+		RTEMoonTargeting(&entopt, &res);
+
+		opt.TIG = res.P30TIG;
+		opt.dV_LVLH = res.dV_LVLH;
+		opt.enginetype = mcc->mcc_calcs.SPSRCSDecision(SPS_THRUST / WeightsTable.ConfigWeight, res.dV_LVLH);
+		opt.HeadsUp = true;
+		opt.REFSMMAT = GetREFSMMATfromAGC(&mcc->cm->agc.vagc, true);
+		opt.RV_MCC = ConvertSVtoEphemData(sv);
+		opt.WeightsTable = WeightsTable;
+		AP11ManeuverPAD(opt, *form);
+		sprintf(form->purpose, "Flyby");
+		sprintf(form->remarks, "Height of pericynthion is %.0f NM", res.FlybyAlt / 1852.0);
+		form->lat = res.latitude * DEG;
+		form->lng = res.longitude * DEG;
+		form->RTGO = res.RTGO;
+		form->VI0 = res.VIO / 0.3048;
+		form->GET05G = res.GET05G;
+		AGCStateVectorUpdate(buffer1, sv, true, true);
+		sprintf(uplinkdata, "%s", buffer1);
+		A14GiveUplink(upString, upDesc, uplinkdata, "CSM state vector, V66");
+	}
+	break;
+	case 24: //MCC-3 at Table I-5 / LOI-22h
+	{
+		AP11ManPADOpt manopt;
+		VECTOR3 dV_LVLH, dv;
+		EphemerisData sv;
+		PLAWDTOutput WeightsTable;
+		double P30TIG, tig;
+		int engine;
+		AP11MNV *form = (AP11MNV *)pad;
+
+		sv = StateVectorCalcEphem(calcParams.src);
+		WeightsTable = GetWeightsTable(calcParams.src, true, true);
+		PZMCCPLN.MidcourseGET = A14_MCC3;
+		PZMCCPLN.Config = true;
+		PZMCCPLN.Column = 1;
+		PZMCCPLN.SFPBlockNum = 2;
+		PZMCCPLN.Mode = 1;
+		TranslunarMidcourseCorrectionProcessor(sv, WeightsTable.CSMWeight, WeightsTable.LMAscWeight + WeightsTable.LMDscWeight);
+
+		tig = GETfromGMT(PZMCCXFR.sv_man_bef[0].GMT);
+		dv = PZMCCXFR.V_man_after[0] - PZMCCXFR.sv_man_bef[0].V;
+		if (length(dv) < 3.0 * 0.3048)
+		{
+			scrubbed = true;
+		}
+
+		if (scrubbed)
+		{
+			char buffer1[1000];
+			A14Msg(upMessage, "MCC-3 has been scrubbed");
+			AGCStateVectorUpdate(buffer1, RTCC_MPT_CSM, RTCC_MPT_CSM, sv, true);
+			sprintf(uplinkdata, "%s", buffer1);
+			A14GiveUplink(upString, upDesc, uplinkdata, "CSM state vector, V66");
+		}
+		else
+		{
+			char buffer1[1000];
+			char buffer2[1000];
+			calcParams.LOI = PZMCCDIS.data[0].GET_LOI;
+			engine = mcc->mcc_calcs.SPSRCSDecision(SPS_THRUST / WeightsTable.ConfigWeight, dv);
+			PoweredFlightProcessor(sv, WeightsTable.CSMWeight, tig, engine, WeightsTable.LMAscWeight + WeightsTable.LMDscWeight, dv, false, P30TIG, dV_LVLH);
+			manopt.TIG = P30TIG;
+			manopt.dV_LVLH = dV_LVLH;
+			manopt.enginetype = engine;
+			manopt.HeadsUp = false;
+			manopt.REFSMMAT = GetREFSMMATfromAGC(&mcc->cm->agc.vagc, true);
+			manopt.RV_MCC = sv;
+			manopt.WeightsTable = WeightsTable;
+			AP11ManeuverPAD(manopt, *form);
+			sprintf(form->purpose, "MCC-3");
+			TimeofIgnition = P30TIG;
+			DeltaV_LVLH = dV_LVLH;
+			AGCStateVectorUpdate(buffer1, RTCC_MPT_CSM, RTCC_MPT_CSM, sv, true);
+			CMCExternalDeltaVUpdate(buffer2, P30TIG, dV_LVLH);
+			sprintf(uplinkdata, "%s%s", buffer1, buffer2);
+			A14GiveUplink(upString, upDesc, uplinkdata, "CSM state vector, V66, Target load");
+		}
+	}
+	break;
+	case 26: //MCC-4 at Table I-5 / LOI-5h. Evaluation (25) stays the H1 perilune test.
+	{
+		AP11ManPADOpt manopt;
+		VECTOR3 dV_LVLH, dv;
+		EphemerisData sv;
+		PLAWDTOutput WeightsTable;
+		double P30TIG, tig;
+		int engine;
+		char buffer1[1000];
+		char buffer2[1000];
+		char buffer3[1000];
+		MATRIX3 REFSMMAT;
+		AP11MNV *form = (AP11MNV *)pad;
+
+		sv = StateVectorCalcEphem(calcParams.src);
+		WeightsTable = GetWeightsTable(calcParams.src, true, true);
+		PZMCCPLN.MidcourseGET = A14_MCC4;
+		PZMCCPLN.Config = true;
+		PZMCCPLN.Column = 1;
+		PZMCCPLN.SFPBlockNum = 2;
+		PZMCCPLN.Mode = 1;
+		TranslunarMidcourseCorrectionProcessor(sv, WeightsTable.CSMWeight, WeightsTable.LMAscWeight + WeightsTable.LMDscWeight);
+		if (PZMCCDIS.data[0].GET_LOI > 0.0)
+		{
+			calcParams.LOI = PZMCCDIS.data[0].GET_LOI;
+		}
+
+		tig = GETfromGMT(PZMCCXFR.sv_man_bef[0].GMT);
+		dv = PZMCCXFR.V_man_after[0] - PZMCCXFR.sv_man_bef[0].V;
+		engine = mcc->mcc_calcs.SPSRCSDecision(SPS_THRUST / WeightsTable.ConfigWeight, dv);
+		PoweredFlightProcessor(sv, WeightsTable.CSMWeight, tig, engine, WeightsTable.LMAscWeight + WeightsTable.LMDscWeight, dv, false, P30TIG, dV_LVLH);
+
+		manopt.TIG = P30TIG;
+		manopt.dV_LVLH = dV_LVLH;
+		manopt.enginetype = engine;
+		manopt.HeadsUp = false;
+		manopt.REFSMMAT = EZJGMTX1.data[RTCC_REFSMMAT_TYPE_LCV - 1].REFSMMAT;
+		manopt.RV_MCC = sv;
+		manopt.WeightsTable = WeightsTable;
+		AP11ManeuverPAD(manopt, *form);
+		sprintf(form->purpose, "MCC-4");
+		TimeofIgnition = P30TIG;
+		DeltaV_LVLH = dV_LVLH;
+
+		AGCStateVectorUpdate(buffer1, RTCC_MPT_CSM, RTCC_MPT_CSM, sv, true);
+		CMCExternalDeltaVUpdate(buffer2, P30TIG, dV_LVLH);
+		REFSMMAT = EZJGMTX1.data[RTCC_REFSMMAT_TYPE_LCV - 1].REFSMMAT;
+		AGCDesiredREFSMMATUpdate(buffer3, REFSMMAT);
+		sprintf(uplinkdata, "%s%s%s", buffer1, buffer2, buffer3);
+		A14GiveUplink(upString, upDesc, uplinkdata, "CSM state vector, V66, Target load, Landing Site REFSMMAT");
+	}
+	break;
+	case 27: //PC+2 after MCC-4. Table I-7 GETI 84:36, GETIL 141:42
+	case 28: //PC+2 with MCC-4 scrubbed
+	{
+		RTEMoonOpt entopt;
+		EntryResults res;
+		AP11ManPADOpt opt;
+		SV sv, sv1;
+		PLAWDTOutput WeightsTable;
+		AP11MNV *form = (AP11MNV *)pad;
+
+		sv = StateVectorCalc(calcParams.src);
+		WeightsTable = GetWeightsTable(calcParams.src, true, true);
+		if (fcn == 27)
+		{
+			sv1 = ExecuteManeuver(sv, TimeofIgnition, DeltaV_LVLH, WeightsTable.LMAscWeight + WeightsTable.LMDscWeight, RTCC_ENGINETYPE_CSMSPS);
+			WeightsTable.CSMWeight = sv1.mass;
+			WeightsTable.ConfigWeight = WeightsTable.CSMWeight + WeightsTable.LMAscWeight + WeightsTable.LMDscWeight;
+		}
+		else
+		{
+			sv1 = sv;
+		}
+
+		entopt.returnspeed = 2;
+		entopt.SMODE = 14;
+		entopt.RV_MCC = sv1;
+		entopt.vessel = calcParams.src;
+		entopt.TIGguess = A14SS(84, 36, 0.0);
+		entopt.t_zmin = A14SS(141, 42, 0.0);
+		entopt.csmlmdocked = true;
+		PZREAP.VRMAX = 37500.0;
+		entopt.entrylongmanual = false;
+		entopt.ATPLine = 0;
+		RTEMoonTargeting(&entopt, &res);
+		PZREAP.VRMAX = 36323.0;
+
+		opt.TIG = res.P30TIG;
+		opt.dV_LVLH = res.dV_LVLH;
+		opt.enginetype = RTCC_ENGINETYPE_CSMSPS;
+		opt.HeadsUp = false;
+		opt.REFSMMAT = EZJGMTX1.data[RTCC_REFSMMAT_TYPE_LCV - 1].REFSMMAT;
+		opt.RV_MCC = ConvertSVtoEphemData(sv1);
+		opt.WeightsTable = WeightsTable;
+		AP11ManeuverPAD(opt, *form);
+		sprintf(form->remarks, "Assumes LS REFSMMAT and docked");
+		if (!mcc->mcc_calcs.REFSMMATDecision(form->Att * RAD))
+		{
+			REFSMMATOpt refsopt;
+			MATRIX3 REFSMMAT;
+			refsopt.dV_LVLH = res.dV_LVLH;
+			refsopt.REFSMMATTime = res.P30TIG;
+			refsopt.REFSMMATopt = 0;
+			refsopt.vessel = calcParams.src;
+			REFSMMAT = REFSMMATCalc(&refsopt);
+			opt.HeadsUp = true;
+			opt.REFSMMAT = REFSMMAT;
+			AP11ManeuverPAD(opt, *form);
+			sprintf(form->remarks, "Docked, preferred REFSMMAT");
+		}
+		sprintf(form->purpose, "PC+2");
+		form->lat = res.latitude * DEG;
+		form->lng = res.longitude * DEG;
+		form->RTGO = res.RTGO;
+		form->VI0 = res.VIO / 0.3048;
+		form->GET05G = res.GET05G;
+		form->type = 2;
+	}
+	break;
+	case 31: //CSM SPS DOI. Table I-5 replaces LOI-2. HP 9.77 nm, 4-jet ullage 14 s
+	{
+		AP11ManPADOpt manopt;
+		double P30TIG;
+		VECTOR3 dV_LVLH;
+		SV sv;
+		PLAWDTOutput WeightsTable;
+		char buffer1[1000];
+		char buffer2[1000];
+		AP11MNV *form = (AP11MNV *)pad;
+
+		sv = StateVectorCalc(calcParams.src);
+		WeightsTable = GetWeightsTable(calcParams.src, true, true);
+		med_k16.Mode = 2;
+		med_k16.Sequence = 3;
+		med_k16.GETTH1 = A14_DOI;
+		med_k16.GETTH2 = med_k16.GETTH3 = med_k16.GETTH4 = med_k16.GETTH1;
+		med_k16.DesiredHeight = 9.77 * 1852.0;
+
+		if (LunarDescentPlanningProcessor(ConvertSVtoEphemData(sv), 0.0) == 0)
+		{
+			PoweredFlightProcessor(sv, PZLDPDIS.GETIG[0], RTCC_ENGINETYPE_CSMSPS, WeightsTable.LMAscWeight + WeightsTable.LMDscWeight, PZLDPDIS.DVVector[0] * 0.3048, true, P30TIG, dV_LVLH);
+			manopt.TIG = P30TIG;
+			manopt.dV_LVLH = dV_LVLH;
+			manopt.enginetype = RTCC_ENGINETYPE_CSMSPS;
+			manopt.HeadsUp = false;
+			manopt.REFSMMAT = GetREFSMMATfromAGC(&mcc->cm->agc.vagc, true);
+			manopt.sxtstardtime = -40.0 * 60.0;
+			manopt.RV_MCC = ConvertSVtoEphemData(sv);
+			manopt.WeightsTable = WeightsTable;
+			AP11ManeuverPAD(manopt, *form);
+			sprintf(form->purpose, "DOI");
+			sprintf(form->remarks, "Ullage: 4 jet, 14 seconds");
+			TimeofIgnition = P30TIG;
+			DeltaV_LVLH = dV_LVLH;
+			calcParams.DOI = P30TIG;
+			AGCStateVectorUpdate(buffer1, sv, true, true);
+			CMCExternalDeltaVUpdate(buffer2, P30TIG, dV_LVLH);
+			sprintf(uplinkdata, "%s%s", buffer1, buffer2);
+			A14GiveUplink(upString, upDesc, uplinkdata, "CSM state vector, V66, Target load");
+		}
+		else
+		{
+			scrubbed = true;
+			A14Msg(upMessage, "A14 DOI 86:56:57 GET, 206.6 fps; targeting failed");
+			AGCStateVectorUpdate(buffer1, sv, true, true);
+			sprintf(uplinkdata, "%s", buffer1);
+			A14GiveUplink(upString, upDesc, uplinkdata, "CSM state vector, V66");
+		}
+	}
+	break;
+	case 32: //Landing-site REFSMMAT. Threshold is Table I-6 PDI, site stays Fra Mauro
+	{
 		MATRIX3 REFSMMAT;
 		SV sv;
 		REFSMMATOpt opt;
@@ -306,20 +683,17 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID& pad, char* upString, char* upDesc,
 		char buffer2[1000];
 
 		sv = StateVectorCalc(calcParams.tgt);
-
 		GZGENCSN.LDPPPoweredDescentSimFlag = false;
 		GZGENCSN.LDPPDwellOrbits = 0;
 		med_k16.Mode = 4;
 		med_k16.Sequence = 1;
-		// TODO(A14): LOI+25.5h is the Apollo 12 descent-planning threshold.
-		med_k16.GETTH1 = med_k16.GETTH2 = med_k16.GETTH3 = med_k16.GETTH4 = calcParams.LOI + 25.5 * 3600.0;
+		med_k16.GETTH1 = med_k16.GETTH2 = med_k16.GETTH3 = med_k16.GETTH4 = A14_PDI;
 
 		if (LunarDescentPlanningProcessor(ConvertSVtoEphemData(sv), 0.0) == 0)
 		{
 			calcParams.DOI = GETfromGMT(PZLDPELM.sv_man_bef[0].GMT);
 			calcParams.PDI = PZLDPDIS.PD_GETIG;
 			CZTDTGTU.GETTD = PZLDPDIS.PD_GETTD;
-
 			PoweredFlightProcessor(sv, calcParams.DOI, RTCC_ENGINETYPE_LMDPS, 0.0, PZLDPELM.V_man_after[0] - PZLDPELM.sv_man_bef[0].V, false, TimeofIgnition, DeltaV_LVLH);
 
 			opt.LSLat = BZLAND.lat[RTCC_LMPOS_BEST];
@@ -327,53 +701,664 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID& pad, char* upString, char* upDesc,
 			opt.REFSMMATopt = 5;
 			opt.REFSMMATTime = CZTDTGTU.GETTD;
 			opt.vessel = calcParams.src;
-
 			REFSMMAT = REFSMMATCalc(&opt);
 			EMGSTSTM(RTCC_MPT_LM, REFSMMAT, RTCC_REFSMMAT_TYPE_LLD, RTCCPresentTimeGMT());
 			GMGMED("G00,LEM,LLD,CSM,LCV;");
-
 			AGCStateVectorUpdate(buffer1, sv, true, true);
 			AGCDesiredREFSMMATUpdate(buffer2, REFSMMAT);
-
 			sprintf(uplinkdata, "%s%s", buffer1, buffer2);
-			if (upString != NULL) {
-				strncpy(upString, uplinkdata, 1024 * 3);
-				sprintf(upDesc, "CSM state vector, V66, LS REFSMMAT");
-			}
+			A14GiveUplink(upString, upDesc, uplinkdata, "CSM state vector, V66, LS REFSMMAT");
 		}
 		else
 		{
+			calcParams.PDI = A14_PDI;
 			AGCStateVectorUpdate(buffer1, sv, true, true);
 			sprintf(uplinkdata, "%s", buffer1);
-			if (upString != NULL) {
-				strncpy(upString, uplinkdata, 1024 * 3);
-				sprintf(upDesc, "CSM state vector, V66");
-			}
-			if (upMessage != NULL)
-			{
-				sprintf(upMessage, "A14 LS REFSMMAT skipped: descent planning failed");
-			}
+			A14GiveUplink(upString, upDesc, uplinkdata, "CSM state vector, V66");
+			A14Msg(upMessage, "A14 LS REFSMMAT skipped: descent planning failed");
 		}
 	}
 	break;
+	case 35: //LGC activation. DOI is already the CSM burn, so the LM SV is post-DOI
+	{
+		VehicleDataBlock sv_CSM, sv_LM, sv_LM_post_DOI;
+		MATRIX3 REFSMMAT;
+		double t_sunrise1, t_sunrise2, t_TPI;
+		double tephem, t_AGC, t_actual, deltaT;
+		int emem[14];
+		char buffer1[1000];
+		char buffer2[1000];
+		char buffer3[1000];
+		char clockupdate[128];
+		PDAPOpt opt;
+		PDAPResults res;
+		LEM *l = (LEM *)calcParams.tgt;
+
+		sv_CSM = StateVectorCalcDataBlock(calcParams.src);
+		sv_LM = StateVectorCalcDataBlock(calcParams.tgt);
+		tephem = GetTEPHEMFromAGC(&l->agc.vagc, false);
+		t_AGC = GetClockTimeFromAGC(&l->agc.vagc) / 100.0;
+		tephem = (tephem / 8640000.) + SystemParameters.TEPHEM0;
+		t_actual = (oapiGetSimMJD() - tephem) * 86400.0;
+		deltaT = t_actual - t_AGC;
+		IncrementAGCTime(clockupdate, RTCC_MPT_LM, deltaT);
+
+		sv_LM_post_DOI = sv_LM;
+		t_sunrise1 = calcParams.PDI + 3.0 * 3600.0;
+		t_sunrise2 = calcParams.PDI + 4.5 * 3600.0;
+		t_TPI = mcc->mcc_calcs.FindOrbitalSunrise(sv_CSM, t_sunrise1) - 23.0 * 60.0;
+
+		opt.dt_stage = 999999.9;
+		opt.W_TAPS = l->GetAscentStageMass();
+		opt.W_TDRY = l->GetMass() - l->GetPropellantMass(l->GetPropellantHandleByIndex(0));
+		opt.IsTwoSegment = true;
+		opt.R_LS = OrbMech::r_from_latlong(BZLAND.lat[RTCC_LMPOS_BEST], BZLAND.lng[RTCC_LMPOS_BEST], BZLAND.rad[RTCC_LMPOS_BEST]);
+		opt.sv_LM = sv_LM_post_DOI;
+		opt.sv_CSM = sv_CSM;
+		opt.GMT_LAND = GMTfromGET(CZTDTGTU.GETTD);
+		opt.dt_CAN = 0.0;
+		opt.DV_CAN = _V(0, 0, 0);
+		opt.dt_CSI = 50.0 * 60.0;
+		opt.GMT_TPI = GMTfromGET(t_TPI);
+		opt.dt_2CAN = 50.0 * 60.0;
+		opt.DV_2CAN = _V(10.0, 0, 0) * 0.3048;
+		opt.dt_2CSI = 110.0 * 60.0;
+		opt.GMT_2TPI = mcc->mcc_calcs.FindOrbitalSunrise(sv_CSM, t_sunrise2) - 23.0 * 60.0;
+		PoweredDescentAbortProgram(opt, res);
+
+		calcParams.SVSTORE1.R.x = (int)(res.J1 / 0.3048 / 100.0);
+		calcParams.SVSTORE1.R.y = (int)(res.A_min / 0.3048 / 100.0);
+		calcParams.SVSTORE1.R.z = (int)(res.A_max / 0.3048 / 100.0);
+		calcParams.SVSTORE1.V.x = (int)(res.K1 / 0.3048 / 100.0 * pow(2, 3));
+
+		emem[0] = 16;
+		emem[1] = 2550;
+		emem[2] = OrbMech::DoubleToBuffer(res.J1, 23, 1);
+		emem[3] = OrbMech::DoubleToBuffer(res.J1, 23, 0);
+		emem[4] = OrbMech::DoubleToBuffer(res.K1 * PI2, 23, 1);
+		emem[5] = OrbMech::DoubleToBuffer(res.K1 * PI2, 23, 0);
+		emem[6] = OrbMech::DoubleToBuffer(res.J2, 23, 1);
+		emem[7] = OrbMech::DoubleToBuffer(res.J2, 23, 0);
+		emem[8] = OrbMech::DoubleToBuffer(res.K2 * PI2, 23, 1);
+		emem[9] = OrbMech::DoubleToBuffer(res.K2 * PI2, 23, 0);
+		emem[10] = OrbMech::DoubleToBuffer(res.Theta_LIM / PI2, 0, 1);
+		emem[11] = OrbMech::DoubleToBuffer(res.Theta_LIM / PI2, 0, 0);
+		emem[12] = OrbMech::DoubleToBuffer(res.R_amin, 24, 1);
+		emem[13] = OrbMech::DoubleToBuffer(res.R_amin, 24, 0);
+		V7XUpdate(71, buffer2, emem, 14);
+
+		REFSMMAT = EZJGMTX3.data[RTCC_REFSMMAT_TYPE_LLD - 1].REFSMMAT;
+		AGCStateVectorUpdate(buffer1, 2, RTCC_MPT_LM, sv_LM.sv, true);
+		AGCREFSMMATUpdate(buffer3, REFSMMAT, false);
+		sprintf(uplinkdata, "%s%s%s%s", buffer1, clockupdate, buffer2, buffer3);
+		A14GiveUplink(upString, upDesc, uplinkdata, "LM state vector, V66, clock, abort constants, LS REFSMMAT");
+	}
+	break;
+	case 37: //Undock/sep 104:27:31, 1 fps. Table I-5 does not give the LVLH axis
+	{
+		calcParams.SEP = A14_SEP;
+		scrubbed = true;
+		A14Msg(upMessage, "A14 undock/sep 104:27:31 GET, 1 fps; LVLH axis not in Table I-5");
+	}
+	break;
+	case 38: //Apollo 12 LM DOI. Apollo 14 DOI is the docked CSM SPS burn
+	{
+		scrubbed = true;
+		A14Msg(upMessage, "No A14 LM DOI. CSM DOI is 86:56:57; circ 105:46:48, 72.46 fps, no LVLH");
+	}
+	break;
+	case 40: //No TEI-1 on Apollo 14
+	case 46:
+	case 47:
+	case 48:
+	case 49:
+		A14Msg(upMessage, "A14 has no TEI pad for this update");
+		return true;
+	case 41: //TEI-4  GETI 91:15 GETIL 141:47, assumes LOI and no DOI
+	case 42: //TEI-5  GETI 92:30 GETIL 166:14, assumes DOI
+	case 43: //TEI-12 GETI 105:54 GETIL 166:24, assumes no circ
+	case 44: //TEI-19 GETI 119:38 GETIL 191:13, assumes circ and no plane change
+	case 45: //TEI-34 preliminary GETI 149:15 GETIL 216:40, assumes plane change
+	case 50: //TEI-34 nominal, Table I-5 149:14:50 to EOM, GETIL 216:40
+	case 51: //TEI-35 GETI 151:14 GETIL 216:16
+	{
+		AP11ManPADOpt opt;
+		double AbortGuess, GETI, GETIL;
+		SV sv0, sv1;
+		char manname[16];
+		EphemerisData sv_e;
+		AP11MNV *form = (AP11MNV *)pad;
+
+		sv0 = StateVectorCalc(calcParams.src);
+		GMGMED("F79,0;");
+
+		if (fcn == 41 || fcn == 42)
+		{
+			sv1 = ExecuteManeuver(sv0, TimeofIgnition, DeltaV_LVLH, GetDockedVesselMass(calcParams.src), RTCC_ENGINETYPE_CSMSPS);
+		}
+		else
+		{
+			sv1 = sv0;
+		}
+		sv_e = ConvertSVtoEphemData(sv1);
+		opt.REFSMMAT = GetREFSMMATfromAGC(&mcc->cm->agc.vagc, true);
+
+		if (fcn == 41)
+		{
+			sprintf(manname, "TEI-4");
+			GETI = A14SS(91, 15, 0.0);
+			GETIL = A14SS(141, 47, 0.0);
+		}
+		else if (fcn == 42)
+		{
+			sprintf(manname, "TEI-5");
+			GETI = A14SS(92, 30, 0.0);
+			GETIL = A14SS(166, 14, 0.0);
+		}
+		else if (fcn == 43)
+		{
+			sprintf(manname, "TEI-12");
+			GETI = A14SS(105, 54, 0.0);
+			GETIL = A14SS(166, 24, 0.0);
+		}
+		else if (fcn == 44)
+		{
+			sprintf(manname, "TEI-19");
+			GETI = A14SS(119, 38, 0.0);
+			GETIL = A14SS(191, 13, 0.0);
+		}
+		else if (fcn == 45)
+		{
+			sprintf(manname, "TEI-34");
+			GETI = A14SS(149, 15, 0.0);
+			GETIL = A14SS(216, 40, 0.0);
+		}
+		else if (fcn == 50)
+		{
+			sprintf(manname, "TEI-34");
+			GETI = A14_TEI;
+			GETIL = A14SS(216, 40, 0.0);
+		}
+		else
+		{
+			sprintf(manname, "TEI-35");
+			GETI = A14SS(151, 14, 0.0);
+			GETIL = A14SS(216, 16, 0.0);
+		}
+
+		AbortGuess = GETI;
+		VEHDATABUF.csmmass = calcParams.src->GetMass();
+		VEHDATABUF.lmascmass = 0.0;
+		VEHDATABUF.lmdscmass = 0.0;
+		VEHDATABUF.sv = sv_e;
+		VEHDATABUF.config = "C";
+
+		med_f75_f77.T_0_min = AbortGuess - 3600.0;
+		med_f77.T_max = AbortGuess + 3600.0;
+		med_f75_f77.T_Z = GETIL;
+		med_f77.Site = (fcn == 50) ? "EOM" : "MPL";
+		DetermineRTESite(med_f77.Site);
+
+		PZREAP.RTEVectorTime = GMTfromGET(med_f75_f77.T_V) / 3600.0;
+		PZREAP.RTET0Min = GMTfromGET(med_f75_f77.T_0_min) / 3600.0;
+		PZREAP.RTET0Max = GMTfromGET(med_f77.T_max) / 3600.0;
+		PZREAP.RTETimeOfLanding = GMTfromGET(med_f75_f77.T_Z) / 3600.0;
+		PZREAP.RTEPTPMissDistance = med_f77.MissDistance;
+		PMMREAST(77, &sv_e);
+
+		med_f80.ASTCode = PZREAP.AbortScanTableData[0].ASTCode;
+		med_f80.ManeuverCode = "CSUX";
+		med_f80.REFSMMAT = "TEI";
+		med_f80.HeadsUp = false;
+		med_f80.NumQuads = 4;
+		med_f80.UllageDT = (fcn == 50) ? 12.0 : 11.0;
+		PMMREDIG(false);
+
+		if (fcn == 50)
+		{
+			GMGMED("G11,CSM,REP;");
+			GMGMED("G00,CSM,DOD,CSM,LCV;");
+			opt.REFSMMAT = EZJGMTX1.data[RTCC_REFSMMAT_TYPE_LCV - 1].REFSMMAT;
+		}
+
+		opt.TIG = PZREAP.RTEDTable[0].GETI;
+		opt.dV_LVLH = PZREAP.RTEDTable[0].DV_XDV;
+		opt.enginetype = RTCC_ENGINETYPE_CSMSPS;
+		opt.HeadsUp = false;
+		opt.RV_MCC = sv_e;
+		opt.WeightsTable.CC[RTCC_CONFIG_C] = true;
+		opt.WeightsTable.CSMWeight = opt.WeightsTable.ConfigWeight = sv1.mass;
+		AP11ManeuverPAD(opt, *form);
+
+		RMMYNIInputTable entin;
+		RMMYNIOutputTable entout;
+		EphemerisData2 sv_EI_ECT;
+		ELVCNV(PZREAP.AbortScanTableData[0].sv_EI, 0, 1, sv_EI_ECT);
+		entin.R0 = sv_EI_ECT.R;
+		entin.V0 = sv_EI_ECT.V;
+		entin.GMT0 = sv_EI_ECT.GMT;
+		entin.lat_T = PZREAP.RTEDTable[0].lat_imp_tgt;
+		entin.lng_T = PZREAP.RTEDTable[0].lng_imp_tgt;
+		entin.KSWCH = 3;
+		RMMYNI(entin, entout);
+
+		sprintf(form->purpose, manname);
+		form->lat = PZREAP.RTEDTable[0].lat_imp_tgt * DEG;
+		form->lng = PZREAP.RTEDTable[0].lng_imp_tgt * DEG;
+		form->RTGO = entout.R_EMS / 1852.0;
+		form->VI0 = entout.V_EMS / 0.3048;
+		form->GET05G = GETfromGMT(entout.t_05g);
+		form->type = 2;
+		if (fcn == 41) sprintf(form->remarks, "Assumes LOI, no DOI");
+		else if (fcn == 42) sprintf(form->remarks, "Assumes DOI");
+		else if (fcn == 43) sprintf(form->remarks, "Assumes no circ");
+		else if (fcn == 44) sprintf(form->remarks, "Assumes circ, no PC");
+		else if (fcn == 45) sprintf(form->remarks, "Preliminary, assumes PC");
+		else if (fcn == 50) sprintf(form->remarks, "Ullage: 4 jet, 12 sec; EOM");
+		else sprintf(form->remarks, "Block data, MPL");
+
+		if (fcn != 51)
+		{
+			SplashLatitude = PZREAP.RTEDTable[0].lat_imp_tgt;
+			SplashLongitude = PZREAP.RTEDTable[0].lng_imp_tgt;
+			calcParams.TEI = PZREAP.RTEDTable[0].GETI;
+			calcParams.EI = PZREAP.RTEDTable[0].ReentryPET;
+			if (calcParams.TEI <= 0.0) calcParams.TEI = GETI;
+		}
+
+		if (fcn == 50)
+		{
+			char buffer1[1000], buffer2[1000], buffer3[1000];
+			TimeofIgnition = PZREAP.RTEDTable[0].GETI;
+			DeltaV_LVLH = PZREAP.RTEDTable[0].DV_XDV;
+			AGCStateVectorUpdate(buffer1, sv1, true, true);
+			CMCExternalDeltaVUpdate(buffer2, TimeofIgnition, DeltaV_LVLH);
+			AGCDesiredREFSMMATUpdate(buffer3, opt.REFSMMAT);
+			sprintf(uplinkdata, "%s%s%s", buffer1, buffer2, buffer3);
+			A14GiveUplink(upString, upDesc, uplinkdata, "CSM state vector, V66, Target load, TEI REFSMMAT");
+		}
+	}
+	break;
+	case 61: //Mosting A, rev 2. Table I-10
+	case 62: //H-3, rev 3
+	case 63: //Landing site, rev 17
+	case 64: //Rev 18: RP-2, 12-1, Dollond E, FHI
+	case 65: //Rev 29: RP-4, Ansgarius N, DE-2, Encke E
+	case 67: //14-1 through 14-4. The rev cell is printed on the 14-1 row (12, 13, 15)
+	case 68: //Rev 15: RP-3, RP-5, Daguerre 66
+	{
+		LMARKTRKPADOpt opt;
+		EphemerisData sv0;
+		double GET_SV;
+		AP11LMARKTRKPAD *form = (AP11LMARKTRKPAD *)pad;
+
+		sv0 = StateVectorCalcEphem(calcParams.src);
+		opt.sv0 = sv0;
+		GET_SV = GETfromGMT(sv0.GMT);
+		form->type = 0;
+
+		if (fcn == 61)
+		{
+			A14Landmark(opt, form, 0, "MOSTING A", -3.250, -5.283, 0.0, GET_SV);
+			opt.entries = 1;
+		}
+		else if (fcn == 62)
+		{
+			A14Landmark(opt, form, 0, "H-3", -3.691, -7.542, 0.0, GET_SV);
+			opt.entries = 1;
+		}
+		else if (fcn == 63)
+		{
+			A14Landmark(opt, form, 0, "LDG SITE", -3.672, -17.463, -0.76, GET_SV);
+			opt.entries = 1;
+		}
+		else if (fcn == 64)
+		{
+			A14Landmark(opt, form, 0, "RP-2", -0.283, 141.250, 0.0, GET_SV);
+			A14Landmark(opt, form, 1, "12-1", -5.736, 112.309, 0.0, GET_SV);
+			A14Landmark(opt, form, 2, "DOLLOND E", -10.433, 15.733, 0.0, GET_SV);
+			A14Landmark(opt, form, 3, "FHI", -3.246, -17.317, 0.0, GET_SV);
+			opt.entries = 4;
+		}
+		else if (fcn == 65)
+		{
+			A14Landmark(opt, form, 0, "RP-4", -5.850, 120.250, 0.0, GET_SV);
+			A14Landmark(opt, form, 1, "ANSGARIUS N", -11.633, 81.067, 0.0, GET_SV);
+			A14Landmark(opt, form, 2, "DE-2", -9.250, 19.592, 0.0, GET_SV);
+			A14Landmark(opt, form, 3, "ENCKE E", 0.283, -40.300, 0.0, GET_SV);
+			opt.entries = 4;
+		}
+		else if (fcn == 67)
+		{
+			A14Landmark(opt, form, 0, "14-1", -4.046, -15.600, -0.44, GET_SV);
+			A14Landmark(opt, form, 1, "14-2", -3.610, -15.317, -0.15, GET_SV);
+			A14Landmark(opt, form, 2, "14-3", -3.919, -15.139, -0.38, GET_SV);
+			A14Landmark(opt, form, 3, "14-4", -3.470, -14.890, -0.87, GET_SV);
+			opt.entries = 4;
+		}
+		else
+		{
+			A14Landmark(opt, form, 0, "RP-3", -3.533, 131.700, 0.0, GET_SV);
+			A14Landmark(opt, form, 1, "RP-5", -10.567, 99.400, 0.0, GET_SV);
+			A14Landmark(opt, form, 2, "DAGUERRE 66", -11.717, 33.200, 0.0, GET_SV);
+			opt.entries = 3;
+		}
+		LandmarkTrackingPAD(opt, *form);
+	}
+	break;
+	case 70: //PDI pad. No LM DOI precedes PDI on Apollo 14
+	{
+		AP11PDIPAD *form = (AP11PDIPAD *)pad;
+		PDIPADOpt opt;
+		VehicleDataBlock sv;
+
+		sv = StateVectorCalcDataBlock(calcParams.tgt);
+		opt.direct = true;
+		opt.HeadsUp = true;
+		opt.REFSMMAT = GetREFSMMATfromAGC(&mcc->lm->agc.vagc, false);
+		opt.R_LS = OrbMech::r_from_latlong(BZLAND.lat[RTCC_LMPOS_BEST], BZLAND.lng[RTCC_LMPOS_BEST], BZLAND.rad[RTCC_LMPOS_BEST]);
+		opt.sv0 = sv;
+		opt.t_land = CZTDTGTU.GETTD;
+		PDI_PAD(opt, *form);
+	}
+	break;
+	case 79:
+		A14Msg(upMessage, "Landing confirmed");
+		break;
+	case 93: //Plane-change evaluation. Liftoff seed is Table I-6 ascent GETI
+	{
+		SV sv_CSM, sv_Liftoff;
+		VECTOR3 R_LS;
+		double TIG_nom, GETbase, MJD_TIG_nom, dt1, LmkRange;
+
+		sv_CSM = StateVectorCalc(calcParams.src);
+		GETbase = CalcGETBase();
+		calcParams.LunarLiftoff = A14_LIFTOFF;
+		TIG_nom = calcParams.LunarLiftoff;
+		MJD_TIG_nom = OrbMech::MJDfromGET(TIG_nom, GETbase);
+		sv_Liftoff = coast(sv_CSM, (MJD_TIG_nom - sv_CSM.MJD) * 24.0 * 3600.0);
+		R_LS = OrbMech::r_from_latlong(BZLAND.lat[RTCC_LMPOS_BEST], BZLAND.lng[RTCC_LMPOS_BEST], BZLAND.rad[RTCC_LMPOS_BEST]);
+		dt1 = OrbMech::findelev_gs(SystemParameters.AGCEpoch, SystemParameters.MAT_J2000_BRCS, sv_Liftoff.R, sv_Liftoff.V, R_LS, MJD_TIG_nom, 180.0 * RAD, sv_Liftoff.gravref, LmkRange);
+		if (abs(LmkRange) < 8.0 * 1852.0)
+		{
+			A14Msg(upMessage, "Plane Change has been scrubbed");
+			scrubbed = true;
+		}
+	}
+	break;
+	case 95:
+		scrubbed = true;
+		A14Msg(upMessage, "No Apollo 14 PC-2 in the flight plan");
+		break;
+	case 110: //CSM sep 146:28:31, 1 fps retrograde. LVLH Z negative is the retrograde axis used for that remark
+	{
+		AP11ManPADOpt opt;
+		EphemerisData sv;
+		VECTOR3 dV_LVLH;
+		int hh, mm;
+		double ss;
+		char buffer1[1000];
+		AP11MNV *form = (AP11MNV *)pad;
+
+		sv = StateVectorCalcEphem(calcParams.src);
+		calcParams.SEP = A14_SEP;
+		dV_LVLH = _V(0, 0, -1.0) * 0.3048;
+		opt.TIG = A14_SEP;
+		opt.dV_LVLH = dV_LVLH;
+		opt.enginetype = RTCC_ENGINETYPE_CSMRCSPLUS4;
+		opt.HeadsUp = false;
+		opt.REFSMMAT = GetREFSMMATfromAGC(&mcc->cm->agc.vagc, true);
+		opt.RV_MCC = sv;
+		opt.WeightsTable = GetWeightsTable(calcParams.src, true, false);
+		AP11ManeuverPAD(opt, *form);
+		sprintf(form->purpose, "SEP");
+		OrbMech::SStoHHMMSS(A14_SEP - 5.0 * 60.0, hh, mm, ss);
+		sprintf(form->remarks, "1 fps retrograde. Jettison 5 min earlier, %d:%02d:%02.0lf", hh, mm, ss);
+		form->type = 2;
+		TimeofIgnition = A14_SEP;
+		DeltaV_LVLH = dV_LVLH;
+
+		AGCStateVectorUpdate(buffer1, RTCC_MPT_CSM, RTCC_MPT_CSM, sv, true);
+		sprintf(uplinkdata, "%s", buffer1);
+		A14GiveUplink(upString, upDesc, uplinkdata, "CSM state vector, V66");
+	}
+	break;
+	case 111:
+	case 112:
+		TimeofIgnition = A14_DEORBIT;
+		DeltaV_LVLH = _V(0, 0, 0);
+		scrubbed = true;
+		A14Msg(upMessage, "A14 LM deorbit 147:52:59 GET, 183.7 fps; LVLH not in Table I-6");
+		break;
+	case 120:
+	case 121:
+	case 122:
+	case 123:
+		scrubbed = true;
+		A14Msg(upMessage, "A14 LM deorbit DSKY commands not in the flight plan");
+		break;
+	case 130:
+	case 131:
+	case 602:
+	case 603:
+	case 604:
+	case 605:
+	case 607:
+	case 608:
+		scrubbed = true;
+		A14Msg(upMessage, "A14 photography update scrubbed: no attitude in the flight plan");
+		break;
+	case 210: //MCC-5 166:14:50
+	case 211:
+	case 212: //MCC-6 194:26:59
+	case 213: //MCC-7 decision
+	case 214: //MCC-7 213:26:59
+	case 300:
+	{
+		EntryOpt entopt;
+		EntryResults res;
+		double MCCtime;
+		char manname[8];
+		SV sv;
+		bool eom;
+
+		sv = StateVectorCalc(calcParams.src);
+		eom = (fcn == 210 || fcn == 211 || fcn == 212 || fcn == 213 || fcn == 214);
+		if (fcn == 210)
+		{
+			MCCtime = A14_MCC5;
+			sprintf(manname, "MCC-5");
+		}
+		else if (fcn == 211 || fcn == 212)
+		{
+			MCCtime = A14_MCC6;
+			sprintf(manname, "MCC-6");
+		}
+		else if (fcn == 213 || fcn == 214)
+		{
+			MCCtime = A14_MCC7;
+			sprintf(manname, "MCC-7");
+		}
+		else if (fcn == 300)
+		{
+			MCCtime = calcParams.TEI + 5.0 * 3600.0;
+			sprintf(manname, "MCC");
+		}
+		else
+		{
+			MCCtime = OrbMech::GETfromMJD(sv.MJD, CalcGETBase());
+			sprintf(manname, "MCC");
+		}
+
+		entopt.enginetype = RTCC_ENGINETYPE_CSMSPS;
+		entopt.RV_MCC = sv;
+		entopt.TIGguess = MCCtime;
+		entopt.vessel = calcParams.src;
+		entopt.csmlmdocked = (calcParams.src->DockingStatus(0) == 1);
+		entopt.type = 3;
+		if (eom)
+		{
+			// Nominal transearth MCCs target the EOM meridian, not MPL.
+			entopt.entrylongmanual = true;
+			entopt.lng = A14_EOM_LNG;
+		}
+		else
+		{
+			entopt.entrylongmanual = false;
+			entopt.ATPLine = 0;
+		}
+		EntryTargeting(entopt, res);
+
+		if (!eom)
+		{
+			entopt.lng = EntryCalculations::MPL2(res.latitude);
+			if (MCCtime < calcParams.EI - 24.0 * 3600.0 && abs(res.longitude - entopt.lng) > 2.0 * RAD)
+			{
+				entopt.type = 1;
+				entopt.t_Z = res.GET400K;
+				EntryTargeting(entopt, res);
+			}
+		}
+
+		if (MCCtime > res.GET400K - 50.0 * 3600.0)
+		{
+			if (length(res.dV_LVLH) < 1.0 * 0.3048) scrubbed = true;
+		}
+		else
+		{
+			if (length(res.dV_LVLH) < 2.0 * 0.3048) scrubbed = true;
+		}
+
+		if (fcn != 213)
+		{
+			AP11ManPADOpt opt;
+			MATRIX3 REFSMMAT;
+			AP11MNV *form = (AP11MNV *)pad;
+
+			if (fcn == 214)
+			{
+				REFSMMATOpt refsopt;
+				refsopt.REFSMMATopt = 3;
+				refsopt.vessel = calcParams.src;
+				refsopt.useSV = true;
+				refsopt.RV_MCC = res.sv_postburn;
+				REFSMMAT = REFSMMATCalc(&refsopt);
+			}
+			else
+			{
+				REFSMMAT = GetREFSMMATfromAGC(&mcc->cm->agc.vagc, true);
+			}
+
+			if (scrubbed)
+			{
+				EntryUpdateCalc(ConvertSVtoEphemData(sv), PZREAP.RRBIAS, true, res);
+				res.dV_LVLH = _V(0, 0, 0);
+				res.P30TIG = entopt.TIGguess;
+			}
+			else
+			{
+				opt.WeightsTable = GetWeightsTable(calcParams.src, true, true);
+				opt.TIG = res.P30TIG;
+				opt.dV_LVLH = res.dV_LVLH;
+				opt.enginetype = mcc->mcc_calcs.SPSRCSDecision(SPS_THRUST / opt.WeightsTable.ConfigWeight, res.dV_LVLH);
+				opt.HeadsUp = false;
+				opt.REFSMMAT = REFSMMAT;
+				opt.RV_MCC = ConvertSVtoEphemData(sv);
+				AP11ManeuverPAD(opt, *form);
+				sprintf(form->purpose, manname);
+				form->lat = res.latitude * DEG;
+				form->lng = res.longitude * DEG;
+				form->RTGO = res.RTGO;
+				form->VI0 = res.VIO / 0.3048;
+				form->GET05G = res.GET05G;
+			}
+
+			if (scrubbed && (fcn == 210 || fcn == 212))
+			{
+				char buffer1[1000];
+				char buffer2[1000];
+				A14Msg(upMessage, fcn == 210 ? "MCC-5 has been scrubbed" : "MCC-6 has been scrubbed");
+				AGCStateVectorUpdate(buffer1, sv, true, true);
+				CMCEntryUpdate(buffer2, res.latitude, res.longitude);
+				sprintf(uplinkdata, "%s%s", buffer1, buffer2);
+				A14GiveUplink(upString, upDesc, uplinkdata, "CSM state vector, V66, Entry target");
+			}
+			else if (scrubbed && fcn == 214)
+			{
+				char buffer1[1000];
+				char buffer2[1000];
+				char buffer3[1000];
+				A14Msg(upMessage, "MCC-7 has been scrubbed");
+				AGCStateVectorUpdate(buffer1, sv, true, true);
+				CMCEntryUpdate(buffer2, res.latitude, res.longitude);
+				AGCDesiredREFSMMATUpdate(buffer3, REFSMMAT);
+				sprintf(uplinkdata, "%s%s%s", buffer1, buffer2, buffer3);
+				A14GiveUplink(upString, upDesc, uplinkdata, "CSM state vector, V66, Entry target, Entry REFSMMAT");
+			}
+			else if (!scrubbed && (fcn == 210 || fcn == 212 || fcn == 300))
+			{
+				char buffer1[1000];
+				char buffer2[1000];
+				AGCStateVectorUpdate(buffer1, sv, true, true);
+				CMCRetrofireExternalDeltaVUpdate(buffer2, res.latitude, res.longitude, res.P30TIG, res.dV_LVLH);
+				sprintf(uplinkdata, "%s%s", buffer1, buffer2);
+				A14GiveUplink(upString, upDesc, uplinkdata, "CSM state vector, V66, Target load");
+			}
+			else if (!scrubbed && fcn == 214)
+			{
+				char buffer1[1000];
+				char buffer2[1000];
+				char buffer3[1000];
+				AGCStateVectorUpdate(buffer1, sv, true, true);
+				CMCRetrofireExternalDeltaVUpdate(buffer2, res.latitude, res.longitude, res.P30TIG, res.dV_LVLH);
+				AGCDesiredREFSMMATUpdate(buffer3, REFSMMAT);
+				sprintf(uplinkdata, "%s%s%s", buffer1, buffer2, buffer3);
+				A14GiveUplink(upString, upDesc, uplinkdata, "CSM state vector, V66, Target load, Entry REFSMMAT");
+			}
+		}
+		else if (scrubbed)
+		{
+			A14Msg(upMessage, "MCC-7 has been scrubbed");
+		}
+		else
+		{
+			A14Msg(upMessage, "MCC-7 will be executed");
+		}
+
+		DeltaV_LVLH = res.dV_LVLH;
+		TimeofIgnition = res.P30TIG;
+		SplashLatitude = res.latitude;
+		SplashLongitude = res.longitude;
+		calcParams.SVSTORE1 = res.sv_postburn;
+		calcParams.EI = res.GET400K;
+	}
+	break;
+	case 216:
+	case 217:
+	case 218:
+	{
+		bool result = CalculationMTP_H1(fcn, pad, upString, upDesc, upMessage);
+		if (pad != NULL)
+		{
+			AP11ENT *form = (AP11ENT *)pad;
+			sprintf(form->Area[0], "EOM");
+		}
+		return result;
+	}
+	case 500:
+		break;
+	case 501:
+		A14Msg(upMessage, "GET sync if clock error exceeds 1 minute. Press kit: about 55 hours.");
+		break;
+	case 502:
+		A14Msg(upMessage, "A14 circ 105:46:48 GET, 72.46 fps; LVLH not in Table I-5");
+		break;
 	default:
-		// Live-state and mission-file updates: state vectors, DAP, TLI from the
-		// Apollo 14 TLI file, maps, LOI/DOI/PDI/ascent solved from the current
-		// SV and BZLAND, liftoff-time pads, TEI for the current revolution
-		// (updates 50 and 51), PTC quad decision, and transearth MCC/entry.
-		//
-		// TODO(A14): several of those H1 functions still carry Apollo 12 template
-		// offsets or labels. They are not replaced here because the pad itself is
-		// integrated from the live trajectory:
-		//   11  CSM/LM separation attitude (48.6, -130.9, -139.1 deg)
-		//   23  lunar-flyby search bound t_zmin = 145h, TIG guess LOI-5h
-		//   31  LOI-2 threshold LOI+3.5h
-		//   38  DOI threshold LOI+25.5h (same offset as update 32)
-		//   70-73, 100, 105 descent/ascent geometry constants from the H1 script
-		//   93  plane-change liftoff seed LOI+58.6h (site is BZLAND, not Surveyor)
-		//   110 is scrubbed; 50/51 and 85-88 recompute from the live state
-		//   216-218 entry area string is "MIDPAC"; coordinates come from targeting
-		//   606, 609 stereo times are terminator crossings, not a named A12 site
+		// Live SV, DAP, TLI from the Apollo 14 TLI file, maps, LOI from the SFP,
+		// PDI/ascent solved at Fra Mauro, PTC quads, and the H1 descent geometry
+		// where Apollo 14 tables do not give a replacement constant.
+		// Update 11 still uses the Apollo 12 separation attitude; no A14 attitude
+		// was in the tables. Updates 100/105/106 solve liftoff from the CSM state.
 		return CalculationMTP_H1(fcn, pad, upString, upDesc, upMessage);
 	}
 

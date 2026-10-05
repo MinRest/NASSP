@@ -30,10 +30,10 @@ See http://nassp.sourceforge.net/license/ for more details.
 // coast, lunar orbit, landing, ascent, transearth, entry, and abort.
 // State numbers are used only while MissionType is MTP_H3.
 //
-// TODO(A14): every absolute GET and lunar-revolution gate in this header is the
-// Apollo 12 flight-plan template. The repo has no Apollo 14 flight plan, so these
-// times are structural hooks that keep the ground loop running. They are not
-// Apollo 14 historical times.
+// GET gates and pad inputs are the Apollo 14 final flight plan (18 January 1971,
+// HSI-209261): Tables I-5, I-6, I-7, I-10, and I-11, the REFSMMAT section, and
+// the press-kit S-IVB and GET-sync times. State numbers match the H1 script so a
+// saved Apollo 12 scenario (MissionType 8) never enters this chain.
 
 
 //Ground liftoff time update to TLI Simulation
