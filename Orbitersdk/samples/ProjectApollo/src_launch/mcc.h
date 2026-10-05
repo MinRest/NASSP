@@ -302,6 +302,7 @@ public:
 	void MissionSequence_F();
 	void MissionSequence_G();
 	void MissionSequence_H1();
+	void MissionSequence_H3();
 	void MissionSequence_SL();
 
 	RTCC *rtcc;												// Pointer to RTCC

@@ -1,5 +1,6 @@
 BEGIN_DESC
 Al Shepard, Stu Roosa and Ed Mitchel make man's fourth landing attempt on the moon at Fra Mauro. Jan 31 1971. The scenario starts at T-4h00min, crew ingress is at T-1h40min. (AS-509)
+Enabled features: MCC
 END_DESC
 
 BEGIN_ENVIRONMENT
@@ -884,11 +885,18 @@ MCC:ProjectApollo\MCC
   STATUS Landed Earth
   POS -95.08833333 29.55805556
   HEADING 270.00
+  MISSIONTRACKING 1
   MISSION Apollo 14
   CSMNAME Kitty-Hawk
   LVNAME AS-509-S4BSTG
   LEMNAME Antares
-  MCC_BEGIN
-  MCC_END
+  RTCC_BEGIN
+    RTCC_MISSIONFILES Apollo 14
+    RTCC_GZGENCSN_Year 1971
+    RTCC_GZGENCSN_MonthofLiftoff 1
+    RTCC_GZGENCSN_DayofLiftoff 31
+    RTCC_LSAzi -1.33186075
+    RTCC_TLAND 392013.0
+  RTCC_END
 END
 END_SHIPS

@@ -42,6 +42,7 @@
 #include "MCC_Mission_F.h"
 #include "MCC_Mission_G.h"
 #include "MCC_Mission_H1.h"
+#include "MCC_Mission_H3.h"
 #include "MCC_Mission_SL.h"
 #include "rtcc.h"
 #include "LVDC.h"
@@ -695,6 +696,7 @@ void MCC::TimeStep(double simdt){
 					break;
 				case 14:
 					MissionType = MTP_H3;
+					setState(MST_SV_PRELAUNCH);
 					break;
 				case 15:
 					MissionType = MTP_J1;
@@ -875,6 +877,9 @@ void MCC::TimeStep(double simdt){
 					case MTP_H1:
 						setState(MST_H1_INSERTION);
 						break;
+					case MTP_H3:
+						setState(MST_H3_INSERTION);
+						break;
 					}
 				}
 			}
@@ -923,6 +928,12 @@ void MCC::TimeStep(double simdt){
 			* MISSION H1: APOLLO 12 *
 			********************** */
 			MissionSequence_H1();
+			break;
+		case MTP_H3:
+			/* *********************
+			* MISSION H3: APOLLO 14 *
+			********************** */
+			MissionSequence_H3();
 			break;
 		case MTP_SKYLAB:
 			/* *********************
@@ -1409,7 +1420,7 @@ int MCC::subThread(){
 		subThreadMacro(subThreadType, subThreadMode);
 		Result = DONE;
 	}
-	else if (MissionType == MTP_D || MissionType == MTP_F || MissionType == MTP_G || MissionType == MTP_H1)
+	else if (MissionType == MTP_D || MissionType == MTP_F || MissionType == MTP_G || MissionType == MTP_H1 || MissionType == MTP_H3)
 	{
 		//Try to find LEM
 		if (rtcc->calcParams.tgt == NULL)
@@ -5024,6 +5035,10 @@ void MCC::initiateAbort()
 		{
 			setState(MST_H1_ABORT_ORBIT);
 		}
+		else if (MissionType == MTP_H3)
+		{
+			setState(MST_H3_ABORT_ORBIT);
+		}
 	}
 	else if (MissionPhase == MMST_TL_COAST)
 	{
@@ -5035,6 +5050,10 @@ void MCC::initiateAbort()
 		else if (MissionType == MTP_H1)
 		{
 			setState(MST_H1_ABORT);
+		}
+		else if (MissionType == MTP_H3)
+		{
+			setState(MST_H3_ABORT);
 		}
 	}
 	else if (MissionPhase == MMST_LUNAR_ORBIT)
@@ -5048,6 +5067,10 @@ void MCC::initiateAbort()
 		{
 			setState(MST_H1_ABORT);
 		}
+		else if (MissionType == MTP_H3)
+		{
+			setState(MST_H3_ABORT);
+		}
 	}
 	else if (MissionPhase == MMST_TE_COAST)
 	{
@@ -5059,6 +5082,10 @@ void MCC::initiateAbort()
 		else if (MissionType == MTP_H1)
 		{
 			setState(MST_H1_ABORT);
+		}
+		else if (MissionType == MTP_H3)
+		{
+			setState(MST_H3_ABORT);
 		}
 	}
 }
