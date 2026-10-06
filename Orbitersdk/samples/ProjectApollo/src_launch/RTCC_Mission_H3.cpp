@@ -561,17 +561,16 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 				manopt.REFSMMAT = GetREFSMMATfromAGC(&mcc->cm->agc.vagc, true);
 				manopt.RV_MCC = sv;
 				manopt.WeightsTable = WeightsTable;
+				// Printed MCC FDAI in the flight plan are preflight values. Attitude comes from this solution.
 				AP11ManeuverPAD(manopt, *form);
 				sprintf(form->purpose, "MCC-%d", mccnum);
 				if (mccnum == 2)
 				{
-					// Page 3-32 prints a preliminary burn FDAI. R/P/Y on the pad stay with the solved dV.
-					sprintf(form->remarks, "Ullage not required. Table I-5 73.40 fps, dV solved. Prelim FDAI p3-32 208/347/316.");
+					sprintf(form->remarks, "Ullage not required. PTC REFSMMAT. Table I-5 planned 73.40 fps; delta-V is solved.");
 				}
 				else
 				{
-					// 11:00-12:00 leaves the MCC-1 pad R/P/Y blank. BT and dV are nominally zero.
-					sprintf(form->remarks, "PTC REFSMMAT. Predicted MCC-2 is outside the 70-90 fps band. Flight plan leaves RPY blank.");
+					sprintf(form->remarks, "PTC REFSMMAT. Predicted MCC-2 is outside the 70-90 fps band.");
 				}
 				AGCStateVectorUpdate(buffer1, RTCC_MPT_CSM, RTCC_MPT_CSM, sv, true);
 				CMCExternalDeltaVUpdate(buffer2, P30TIG, dV_LVLH);
@@ -689,10 +688,10 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 			manopt.REFSMMAT = GetREFSMMATfromAGC(&mcc->cm->agc.vagc, true);
 			manopt.RV_MCC = sv;
 			manopt.WeightsTable = WeightsTable;
+			// Printed MCC FDAI in the flight plan are preflight values. Attitude comes from this solution.
 			AP11ManeuverPAD(manopt, *form);
 			sprintf(form->purpose, "MCC-3");
-			// 60:00-61:00 leaves the burn R/P/Y blank. BT and dV are nominally zero.
-			sprintf(form->remarks, "PTC REFSMMAT. Table I-5 nominally zero; predicted MCC-4 is above 3.8 fps. Flight plan leaves RPY blank.");
+			sprintf(form->remarks, "PTC REFSMMAT. Table I-5 nominally zero; predicted MCC-4 is above 3.8 fps.");
 			TimeofIgnition = P30TIG;
 			DeltaV_LVLH = dV_LVLH;
 			AGCStateVectorUpdate(buffer1, RTCC_MPT_CSM, RTCC_MPT_CSM, sv, true);
@@ -795,10 +794,10 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 		manopt.REFSMMAT = EZJGMTX1.data[RTCC_REFSMMAT_TYPE_LCV - 1].REFSMMAT;
 		manopt.RV_MCC = sv;
 		manopt.WeightsTable = WeightsTable;
+		// Printed MCC FDAI in the flight plan are preflight values. Attitude comes from this solution.
 		AP11ManeuverPAD(manopt, *form);
 		sprintf(form->purpose, "MCC-4");
-		// 77:00-78:00 leaves the burn R/P/Y blank. BT and dV are nominally zero.
-		sprintf(form->remarks, "SPS, PTC REFSMMAT. Table I-5 TIG 77:38:14, nominally zero. Flight plan leaves RPY blank.");
+		sprintf(form->remarks, "SPS, PTC REFSMMAT. Table I-5 TIG 77:38:14, nominally zero.");
 		TimeofIgnition = P30TIG;
 		DeltaV_LVLH = dV_LVLH;
 
