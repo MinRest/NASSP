@@ -184,9 +184,9 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 			GMGMED("M68,CSM,1;");
 		}
 
-		// The H1 calculator inserts an inertial separation attitude of
-		// 48.6, -130.9, -139.1 deg. The A14 flight plan, AS-509 operational
-		// trajectory (19710005842), and MSC-04112 do not print that attitude.
+		// Page 3-5 prints the sep FDAI (000, 158, 319) and page 3-6 prints the
+		// dock FDAI (301, 338, 041). Those are pad angles, not the LVLH pitch/yaw/roll
+		// M66 wants. The CSM separation itself is +X for 3 s (about 0.5 fps) at 03:01.
 		// Only the TLI burn is stored, so later pads must use mantable[0].
 		if (PZMPTCSM.ManeuverNum < 1 || PZMPTCSM.mantable.empty())
 		{
@@ -195,7 +195,7 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 		}
 		TimeofIgnition = GETfromGMT(PZMPTCSM.mantable[0].GMT_BI);
 		calcParams.TLI = GETfromGMT(PZMPTCSM.mantable[0].GMT_BO);
-		A14Msg(upMessage, "A14 TLI sim. Post-TLI sep attitude is not published; Apollo 12 angles are not used.");
+		A14Msg(upMessage, "A14 TLI sim. FDAI sep and dock angles are on the TLI pad. No inertial sep attitude is printed, so no sep maneuver is added.");
 	}
 	break;
 	case 12: //TLI+90. Table I-7: GETI 4:00, GETIL 12:12, AOL
@@ -259,7 +259,7 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 		A14GiveUplink(upString, upDesc, uplinkdata, "CSM state vector, V66");
 	}
 	break;
-	case 14: //TLI pad from the A14 TLI file. SEP and extraction attitudes are omitted.
+	case 14: //TLI pad. SEP and extraction FDAI are the printed flight-plan angles.
 	{
 		TLIPAD *form = (TLIPAD *)pad;
 
@@ -283,8 +283,14 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 			break;
 		}
 		form->VI = length(PZMPTCSM.mantable[0].V_BO) / 0.3048;
-		form->type = 0;
-		sprintf(form->remarks, "SEP/EXT attitude omitted; not in the A14 flight plan");
+		// type 2 prints both SEP and extraction. Angles are FDAI roll, pitch, yaw.
+		// Page 3-5 (02:00-03:00): S-IVB MNVRS TO SEP ATT 02:51:34 (000, 158, 319).
+		// Page 3-6 (03:00-04:00): CSM MNVR TO DOCK ATT (301, 338, 041). The pad's
+		// extraction line is that dock attitude. The stack is still attached at sep.
+		form->type = 2;
+		form->SepATT = _V(0.0, 158.0, 319.0);
+		form->ExtATT = _V(301.0, 338.0, 41.0);
+		sprintf(form->remarks, "SEP p3-5 000/158/319. Extraction is dock att p3-6 301/338/041.");
 
 		GMGMED("M62,CSM,1,D;");
 		EZANCHR1.AnchorVectors[9].Vector.GMT = 0.0;
@@ -559,11 +565,13 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 				sprintf(form->purpose, "MCC-%d", mccnum);
 				if (mccnum == 2)
 				{
-					sprintf(form->remarks, "Ullage not required. PTC REFSMMAT. Table I-5 planned 73.40 fps; delta-V is solved.");
+					// Page 3-32 prints a preliminary burn FDAI. R/P/Y on the pad stay with the solved dV.
+					sprintf(form->remarks, "Ullage not required. Table I-5 73.40 fps, dV solved. Prelim FDAI p3-32 208/347/316.");
 				}
 				else
 				{
-					sprintf(form->remarks, "PTC REFSMMAT. Predicted MCC-2 is outside the 70-90 fps band.");
+					// 11:00-12:00 leaves the MCC-1 pad R/P/Y blank. BT and dV are nominally zero.
+					sprintf(form->remarks, "PTC REFSMMAT. Predicted MCC-2 is outside the 70-90 fps band. Flight plan leaves RPY blank.");
 				}
 				AGCStateVectorUpdate(buffer1, RTCC_MPT_CSM, RTCC_MPT_CSM, sv, true);
 				CMCExternalDeltaVUpdate(buffer2, P30TIG, dV_LVLH);
@@ -683,7 +691,8 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 			manopt.WeightsTable = WeightsTable;
 			AP11ManeuverPAD(manopt, *form);
 			sprintf(form->purpose, "MCC-3");
-			sprintf(form->remarks, "PTC REFSMMAT. Table I-5 nominally zero; predicted MCC-4 is above 3.8 fps.");
+			// 60:00-61:00 leaves the burn R/P/Y blank. BT and dV are nominally zero.
+			sprintf(form->remarks, "PTC REFSMMAT. Table I-5 nominally zero; predicted MCC-4 is above 3.8 fps. Flight plan leaves RPY blank.");
 			TimeofIgnition = P30TIG;
 			DeltaV_LVLH = dV_LVLH;
 			AGCStateVectorUpdate(buffer1, RTCC_MPT_CSM, RTCC_MPT_CSM, sv, true);
@@ -788,7 +797,8 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 		manopt.WeightsTable = WeightsTable;
 		AP11ManeuverPAD(manopt, *form);
 		sprintf(form->purpose, "MCC-4");
-		sprintf(form->remarks, "SPS, PTC REFSMMAT. Table I-5 TIG 77:38:14, nominally zero.");
+		// 77:00-78:00 leaves the burn R/P/Y blank. BT and dV are nominally zero.
+		sprintf(form->remarks, "SPS, PTC REFSMMAT. Table I-5 TIG 77:38:14, nominally zero. Flight plan leaves RPY blank.");
 		TimeofIgnition = P30TIG;
 		DeltaV_LVLH = dV_LVLH;
 

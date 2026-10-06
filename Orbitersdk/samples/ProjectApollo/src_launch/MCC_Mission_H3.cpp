@@ -74,7 +74,7 @@ void MCC::MissionSequence_H3()
 	case MST_H3_EPO3: //L/O+8, Table I-7 passed at 1:40
 		UpdateMacro(UTP_PADONLY, PT_P37PAD, SubStateTime > 3.0 * 60.0, 13, MST_H3_EPO4);
 		break;
-	case MST_H3_EPO4: //Pre-burn TLI pad, held until burnout + 18 s. SEP attitude is omitted.
+	case MST_H3_EPO4: //Pre-burn TLI pad, held until burnout + 18 s. SEP and extraction FDAI are on the pad.
 		UpdateMacro(UTP_PADONLY, PT_TLIPAD, mcc_calcs.GETEval(rtcc->calcParams.TLI + 18.0), 14, MST_H3_TRANSLUNAR_DAY1_1);
 		break;
 	case MST_H3_TRANSLUNAR_DAY1_1: //TLI evaluation. Second opportunity is the in-tree TLI file, GET 3:00
