@@ -33,7 +33,10 @@ See http://nassp.sourceforge.net/license/ for more details.
 
 // Planned GET from the Apollo 14 final flight plan, 18 January 1971 (HSI-209261).
 // Delta-V is solved on the live trajectory. Preflight delta-V is not copied in.
-// MCC-3 is LOI-22 h and MCC-4 is LOI-5 h (Mission Techniques, H-2 and subsequent).
+// Translunar MCC decisions are HSI-43756: MCC-1 was not computed when the predicted
+// MCC-2 was 70-90 fps; MCC-3 was not computed when the predicted MCC-4 was 1.7-3.8 fps;
+// MCC-2 and, on the flown trajectory, MCC-4 were the burns. Table I-5 lists MCC-1,
+// MCC-3, and MCC-4 as nominally zero and MCC-2 as the SPS hybrid transfer.
 // The LM-impact note (October 1970) gives the post-rendezvous separation axis and
 // the deorbit components. MSC 71-FM54-41 gives the MCC-5 threshold of 1 fps.
 // Table I-6 gives ascent 142:24:29 and TPI 143:09:40. It does not give the
@@ -46,10 +49,16 @@ static double A14SS(int h, int m, double s)
 }
 
 static const double A14_LOI = 82.0 * 3600.0 + 38.0 * 60.0 + 14.0;       // Table I-5
-static const double A14_MCC1 = 11.0 * 3600.0 + 36.0 * 60.0 + 33.0;      // Table I-5
-static const double A14_MCC2 = 30.0 * 3600.0 + 36.0 * 60.0 + 7.0;       // Table I-5
-static const double A14_MCC3 = 60.0 * 3600.0 + 38.0 * 60.0 + 14.0;      // LOI-22h
-static const double A14_MCC4 = 77.0 * 3600.0 + 38.0 * 60.0 + 14.0;      // LOI-5h
+static const double A14_MCC1 = 11.0 * 3600.0 + 36.0 * 60.0 + 33.0;      // Table I-5, nominally zero
+static const double A14_MCC2 = 30.0 * 3600.0 + 36.0 * 60.0 + 7.0;       // Table I-5 SPS hybrid transfer
+static const double A14_MCC3 = 60.0 * 3600.0 + 38.0 * 60.0 + 14.0;      // Table I-5, nominally zero
+static const double A14_MCC4 = 77.0 * 3600.0 + 38.0 * 60.0 + 14.0;      // Table I-5 and the flown GET
+// Section E: X in the ecliptic, perpendicular to the earth-moon line at the
+// average transearth injection of the monthly window. Not this mission's TEI.
+// ARCore stores that Apollo 14 epoch as 166:10:30 GET of the nominal launch.
+static const double A14_PTC_REFSMMAT_MJD = 40989.77326433333;
+// 1971-01-31 Init.txt TLAND. Landing-site REFSMMAT epoch, section E.
+static const double A14_TLAND = 108.8925 * 3600.0;
 static const double A14_DOI = 86.0 * 3600.0 + 56.0 * 60.0 + 57.0;       // Table I-5
 static const double A14_UNDOCK = 104.0 * 3600.0 + 27.0 * 60.0 + 31.0;   // Table I-5
 static const double A14_CIRC = 105.0 * 3600.0 + 46.0 * 60.0 + 48.0;     // Table I-5
@@ -325,14 +334,6 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 		P37PAD *form = (P37PAD *)pad;
 
 		sv1 = StateVectorCalc(calcParams.src);
-		if (length(DeltaV_LVLH) > 0.0)
-		{
-			sv2 = ExecuteManeuver(sv1, TimeofIgnition, DeltaV_LVLH, GetDockedVesselMass(calcParams.src), RTCC_ENGINETYPE_CSMSPS);
-		}
-		else
-		{
-			sv2 = sv1;
-		}
 
 		entopt.entrylongmanual = false;
 		entopt.ATPLine = 0;
@@ -340,22 +341,48 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 		entopt.type = 1;
 		entopt.vessel = calcParams.src;
 
-		// L/O+35 assumes MCC-2, which has not been solved at the 14:00 pass.
-		// Both solutions use the post-MCC-1 trajectory when that burn exists.
-		A14P37Line(this, entopt, form, 0, sv2, A14SS(25, 0, 0.0), A14SS(70, 3, 0.0));
-		A14P37Line(this, entopt, form, 1, sv2, A14SS(35, 0, 0.0), A14SS(69, 28, 0.0));
-		A14P37Line(this, entopt, form, 2, sv2, A14SS(45, 0, 0.0), A14SS(93, 49, 0.0));
-		A14P37Line(this, entopt, form, 3, sv2, A14SS(60, 0, 0.0), A14SS(117, 53, 0.0));
+		// Note 2: L/O+15 assumes no MCC-1. These lines are before MCC-2 except note 3.
+		A14P37Line(this, entopt, form, 0, sv1, A14SS(25, 0, 0.0), A14SS(70, 3, 0.0));
+		A14P37Line(this, entopt, form, 2, sv1, A14SS(45, 0, 0.0), A14SS(93, 49, 0.0));
+		A14P37Line(this, entopt, form, 3, sv1, A14SS(60, 0, 0.0), A14SS(117, 53, 0.0));
+
+		// Note 3: L/O+35 assumes the hybrid MCC-2. Solve it; do not invent its delta-V.
+		EphemerisData svMCC;
+		PLAWDTOutput wt;
+		VECTOR3 dvMCC;
+		svMCC = StateVectorCalcEphem(calcParams.src);
+		wt = GetWeightsTable(calcParams.src, true, true);
+		PZMCCPLN.MidcourseGET = A14_MCC2;
+		PZMCCPLN.Config = true;
+		PZMCCPLN.Column = 1;
+		PZMCCPLN.SFPBlockNum = 1;
+		PZMCCPLN.Mode = 5;
+		GMGMED("F23,0.0:0.0:0.0,0.0:0.0:0.0;");
+		TranslunarMidcourseCorrectionProcessor(svMCC, wt.CSMWeight, wt.LMAscWeight + wt.LMDscWeight);
+		dvMCC = PZMCCXFR.V_man_after[0] - PZMCCXFR.sv_man_bef[0].V;
+		if (PZMCCXFR.sv_man_bef[0].GMT <= 0.0 || length(dvMCC) < 0.3048)
+		{
+			A14Msg(upMessage, "L/O+35 not filled: Table I-7 note 3 assumes MCC-2, and that solution is null");
+		}
+		else
+		{
+			double p30;
+			VECTOR3 dvLvlh;
+			int engine = mcc->mcc_calcs.SPSRCSDecision(SPS_THRUST / wt.ConfigWeight, dvMCC);
+			PoweredFlightProcessor(svMCC, wt.CSMWeight, A14_MCC2, engine, wt.LMAscWeight + wt.LMDscWeight, dvMCC, false, p30, dvLvlh);
+			sv2 = ExecuteManeuver(sv1, p30, dvLvlh, wt.LMAscWeight + wt.LMDscWeight, RTCC_ENGINETYPE_CSMSPS);
+			A14P37Line(this, entopt, form, 1, sv2, A14SS(35, 0, 0.0), A14SS(69, 28, 0.0));
+		}
 	}
 	break;
-	case 18: //PTC REFSMMAT. Section E; epoch is Table I-5 TEI, not the window average
+	case 18: //PTC REFSMMAT. Section E average-window epoch, shared by TLC and TEC
 	{
 		char buffer[1000];
 		REFSMMATOpt refsopt;
 		MATRIX3 REFSMMAT;
 
 		refsopt.REFSMMATopt = 6;
-		refsopt.REFSMMATTime = OrbMech::MJDfromGET(A14_TEI, CalcGETBase());
+		refsopt.REFSMMATTime = A14_PTC_REFSMMAT_MJD;
 		REFSMMAT = REFSMMATCalc(&refsopt);
 		AGCDesiredREFSMMATUpdate(buffer, REFSMMAT);
 		sprintf(uplinkdata, "%s", buffer);
@@ -415,12 +442,22 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 			}
 		}
 
+		int mcc1reason = 0;
 		if (fcn == 19 || fcn == 21)
 		{
+			double mcc2dv = length(PZMCCDIS.data[0].DV_MCC);
 			mccnum = 1;
-			if (length(PZMCCDIS.data[0].DV_MCC) < 120.0 * 0.3048)
+			// HSI-43756: MCC-1 was not computed when predicted MCC-2 was 70-90 fps.
+			// A null MCC-2 solution is not a reason to invent an MCC-1 burn.
+			if (mcc2dv >= 70.0 * 0.3048 && mcc2dv <= 90.0 * 0.3048)
 			{
 				scrubbed = true;
+				mcc1reason = 1;
+			}
+			else if (mcc2dv < 0.3048)
+			{
+				scrubbed = true;
+				mcc1reason = 2;
 			}
 			else
 			{
@@ -441,6 +478,11 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 						if (init) init = false;
 						n++;
 					}
+				}
+				if (length(PZMCCDIS.data[0].DV_MCC) < 0.3048)
+				{
+					scrubbed = true;
+					mcc1reason = 2;
 				}
 			}
 		}
@@ -466,7 +508,8 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 
 		if (!scrubbed)
 		{
-			engine = mcc->mcc_calcs.SPSRCSDecision(SPS_THRUST / WeightsTable.ConfigWeight, PZMCCDIS.data[0].DV_MCC);
+			// Table I-5: MCC-2 is an SPS burn. MCC-1 has no engine because it is nominally zero.
+			engine = (mccnum == 2) ? RTCC_ENGINETYPE_CSMSPS : mcc->mcc_calcs.SPSRCSDecision(SPS_THRUST / WeightsTable.ConfigWeight, PZMCCDIS.data[0].DV_MCC);
 			PoweredFlightProcessor(sv, WeightsTable.CSMWeight, PZMCCPLN.MidcourseGET, engine, WeightsTable.LMAscWeight + WeightsTable.LMDscWeight, PZMCCXFR.V_man_after[0] - PZMCCXFR.sv_man_bef[0].V, false, P30TIG, dV_LVLH);
 			TimeofIgnition = P30TIG;
 			DeltaV_LVLH = dV_LVLH;
@@ -481,7 +524,18 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 			if (scrubbed)
 			{
 				char buffer1[1000];
-				A14Msg(upMessage, mccnum == 1 ? "MCC-1 has been scrubbed." : "MCC-2 has been scrubbed.");
+				if (mccnum == 1 && mcc1reason == 1)
+				{
+					A14Msg(upMessage, "MCC-1 not computed: predicted MCC-2 is within 70-90 fps (HSI-43756). Table I-5 is nominally zero.");
+				}
+				else if (mccnum == 1)
+				{
+					A14Msg(upMessage, "MCC-1 not computed: no usable solution. Table I-5 MCC-1 is nominally zero.");
+				}
+				else
+				{
+					A14Msg(upMessage, "MCC-2 skipped: hybrid-transfer solution is null. Table I-5 plans 30:36:07, 73.40 fps SPS.");
+				}
 				AGCStateVectorUpdate(buffer1, RTCC_MPT_CSM, RTCC_MPT_CSM, sv, true);
 				sprintf(uplinkdata, "%s", buffer1);
 				A14GiveUplink(upString, upDesc, uplinkdata, "CSM state vector, V66");
@@ -495,14 +549,22 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 
 				manopt.TIG = P30TIG;
 				manopt.dV_LVLH = dV_LVLH;
-				manopt.enginetype = mcc->mcc_calcs.SPSRCSDecision(SPS_THRUST / WeightsTable.ConfigWeight, dV_LVLH);
+				// Table I-5: MCC-2 is an SPS burn, ullage not required. MCC-1 has no engine row.
+				manopt.enginetype = (mccnum == 2) ? RTCC_ENGINETYPE_CSMSPS : mcc->mcc_calcs.SPSRCSDecision(SPS_THRUST / WeightsTable.ConfigWeight, dV_LVLH);
 				manopt.HeadsUp = true;
 				manopt.REFSMMAT = GetREFSMMATfromAGC(&mcc->cm->agc.vagc, true);
 				manopt.RV_MCC = sv;
 				manopt.WeightsTable = WeightsTable;
 				AP11ManeuverPAD(manopt, *form);
 				sprintf(form->purpose, "MCC-%d", mccnum);
-				sprintf(form->remarks, "LM weight is %.0f.", form->LMWeight);
+				if (mccnum == 2)
+				{
+					sprintf(form->remarks, "Ullage not required. PTC REFSMMAT. Table I-5 planned 73.40 fps; delta-V is solved.");
+				}
+				else
+				{
+					sprintf(form->remarks, "PTC REFSMMAT. Predicted MCC-2 is outside the 70-90 fps band.");
+				}
 				AGCStateVectorUpdate(buffer1, RTCC_MPT_CSM, RTCC_MPT_CSM, sv, true);
 				CMCExternalDeltaVUpdate(buffer2, P30TIG, dV_LVLH);
 				sprintf(uplinkdata, "%s%s", buffer1, buffer2);
@@ -543,6 +605,11 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 		AP11ManeuverPAD(opt, *form);
 		sprintf(form->purpose, "Flyby");
 		sprintf(form->remarks, "Height of pericynthion is %.0f NM", res.FlybyAlt / 1852.0);
+		// Table I-7 note 4. Passed at 35:00; a negative height means it is not clear of the Moon.
+		if (res.FlybyAlt < 0.0)
+		{
+			A14Msg(upMessage, "Flyby pericynthion is not clear of the Moon. Table I-7 note 4.");
+		}
 		form->lat = res.latitude * DEG;
 		form->lng = res.longitude * DEG;
 		form->RTGO = res.RTGO;
@@ -553,10 +620,10 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 		A14GiveUplink(upString, upDesc, uplinkdata, "CSM state vector, V66");
 	}
 	break;
-	case 24: //MCC-3 at LOI-22h. Techniques: under 3 fps is corrected at LOI
+	case 24: //MCC-3 at Table I-5 60:38:14. HSI-43756: not computed when MCC-4 is 1.7-3.8 fps
 	{
 		AP11ManPADOpt manopt;
-		VECTOR3 dV_LVLH, dv;
+		VECTOR3 dV_LVLH, dv, dv4;
 		EphemerisData sv;
 		PLAWDTOutput WeightsTable;
 		double P30TIG, tig;
@@ -565,24 +632,37 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 
 		sv = StateVectorCalcEphem(calcParams.src);
 		WeightsTable = GetWeightsTable(calcParams.src, true, true);
-		PZMCCPLN.MidcourseGET = A14_MCC3;
 		PZMCCPLN.Config = true;
 		PZMCCPLN.Column = 1;
 		PZMCCPLN.SFPBlockNum = 2;
 		PZMCCPLN.Mode = 1;
+		PZMCCPLN.MidcourseGET = A14_MCC4;
 		TranslunarMidcourseCorrectionProcessor(sv, WeightsTable.CSMWeight, WeightsTable.LMAscWeight + WeightsTable.LMDscWeight);
+		dv4 = PZMCCXFR.V_man_after[0] - PZMCCXFR.sv_man_bef[0].V;
+		// 3.8 fps is the top of the range in which MCC-3 was not computed.
+		if (PZMCCXFR.sv_man_bef[0].GMT <= 0.0 || length(dv4) <= 3.8 * 0.3048)
+		{
+			scrubbed = true;
+			A14Msg(upMessage, "MCC-3 not computed: predicted MCC-4 is not above 3.8 fps (HSI-43756). Table I-5 MCC-3 is nominally zero.");
+		}
+
+		if (!scrubbed)
+		{
+			PZMCCPLN.MidcourseGET = A14_MCC3;
+			TranslunarMidcourseCorrectionProcessor(sv, WeightsTable.CSMWeight, WeightsTable.LMAscWeight + WeightsTable.LMDscWeight);
+		}
 
 		tig = GETfromGMT(PZMCCXFR.sv_man_bef[0].GMT);
 		dv = PZMCCXFR.V_man_after[0] - PZMCCXFR.sv_man_bef[0].V;
-		if (length(dv) < 3.0 * 0.3048)
+		if (!scrubbed && (PZMCCXFR.sv_man_bef[0].GMT <= 0.0 || length(dv) < 0.3048))
 		{
 			scrubbed = true;
+			A14Msg(upMessage, "MCC-3 skipped: solution is null. Table I-5 is nominally zero.");
 		}
 
 		if (scrubbed)
 		{
 			char buffer1[1000];
-			A14Msg(upMessage, "MCC-3 has been scrubbed");
 			AGCStateVectorUpdate(buffer1, RTCC_MPT_CSM, RTCC_MPT_CSM, sv, true);
 			sprintf(uplinkdata, "%s", buffer1);
 			A14GiveUplink(upString, upDesc, uplinkdata, "CSM state vector, V66");
@@ -603,6 +683,7 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 			manopt.WeightsTable = WeightsTable;
 			AP11ManeuverPAD(manopt, *form);
 			sprintf(form->purpose, "MCC-3");
+			sprintf(form->remarks, "PTC REFSMMAT. Table I-5 nominally zero; predicted MCC-4 is above 3.8 fps.");
 			TimeofIgnition = P30TIG;
 			DeltaV_LVLH = dV_LVLH;
 			AGCStateVectorUpdate(buffer1, RTCC_MPT_CSM, RTCC_MPT_CSM, sv, true);
@@ -612,7 +693,53 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 		}
 	}
 	break;
-	case 26: //MCC-4 at Table I-5 / LOI-5h. Evaluation (25) stays the H1 perilune test.
+	case 25: //MCC-4 decision. Table I-5 nominally zero; HSI-43756 flew it when perilune was high.
+	{
+		REFSMMATOpt refsopt;
+		MATRIX3 REFSMMAT;
+		EphemerisData sv;
+		PLAWDTOutput WeightsTable;
+		VECTOR3 dv;
+
+		if (CZTDTGTU.GETTD <= 0.0)
+		{
+			CZTDTGTU.GETTD = A14_TLAND;
+		}
+		refsopt.LSAzi = calcParams.LSAzi;
+		refsopt.LSLat = BZLAND.lat[RTCC_LMPOS_BEST];
+		refsopt.LSLng = BZLAND.lng[RTCC_LMPOS_BEST];
+		refsopt.REFSMMATopt = 8;
+		refsopt.REFSMMATTime = CZTDTGTU.GETTD;
+		REFSMMAT = REFSMMATCalc(&refsopt);
+		EMGSTSTM(RTCC_MPT_LM, REFSMMAT, RTCC_REFSMMAT_TYPE_LLD, RTCCPresentTimeGMT());
+		GMGMED("G00,LEM,LLD,CSM,LCV;");
+
+		sv = StateVectorCalcEphem(calcParams.src);
+		WeightsTable = GetWeightsTable(calcParams.src, true, true);
+		PZMCCPLN.MidcourseGET = A14_MCC4;
+		PZMCCPLN.Config = true;
+		PZMCCPLN.Column = 1;
+		PZMCCPLN.SFPBlockNum = 2;
+		PZMCCPLN.Mode = 1;
+		TranslunarMidcourseCorrectionProcessor(sv, WeightsTable.CSMWeight, WeightsTable.LMAscWeight + WeightsTable.LMDscWeight);
+		dv = PZMCCXFR.V_man_after[0] - PZMCCXFR.sv_man_bef[0].V;
+		if (PZMCCDIS.data[0].GET_LOI > 0.0)
+		{
+			calcParams.LOI = PZMCCDIS.data[0].GET_LOI;
+		}
+		if (PZMCCXFR.sv_man_bef[0].GMT <= 0.0 || length(dv) < 0.3048)
+		{
+			scrubbed = true;
+			DeltaV_LVLH = _V(0.0, 0.0, 0.0);
+			A14Msg(upMessage, "MCC-4 scrubbed: solved correction is null. Table I-5 is nominally zero. HSI-43756 flew 3.8 fps SPS at 77:38:14 GET because perilune was 65.17 nm.");
+		}
+		else
+		{
+			A14Msg(upMessage, "MCC-4 will be executed at 77:38:14. HSI-43756 used the SPS when the incoming perilune was high.");
+		}
+	}
+	break;
+	case 26: //MCC-4 pad at Table I-5 / flown GET 77:38:14. SPS, as flown, to save RCS.
 	{
 		AP11ManPADOpt manopt;
 		VECTOR3 dV_LVLH, dv;
@@ -641,7 +768,15 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 
 		tig = GETfromGMT(PZMCCXFR.sv_man_bef[0].GMT);
 		dv = PZMCCXFR.V_man_after[0] - PZMCCXFR.sv_man_bef[0].V;
-		engine = mcc->mcc_calcs.SPSRCSDecision(SPS_THRUST / WeightsTable.ConfigWeight, dv);
+		if (PZMCCXFR.sv_man_bef[0].GMT <= 0.0 || length(dv) < 0.3048)
+		{
+			scrubbed = true;
+			DeltaV_LVLH = _V(0.0, 0.0, 0.0);
+			A14Msg(upMessage, "MCC-4 pad skipped: solved correction is null. Table I-5 is nominally zero.");
+			break;
+		}
+		// HSI-43756: the flown MCC-4 was an SPS minimum-impulse burn, to save RCS.
+		engine = RTCC_ENGINETYPE_CSMSPS;
 		PoweredFlightProcessor(sv, WeightsTable.CSMWeight, tig, engine, WeightsTable.LMAscWeight + WeightsTable.LMDscWeight, dv, false, P30TIG, dV_LVLH);
 
 		manopt.TIG = P30TIG;
@@ -653,6 +788,7 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 		manopt.WeightsTable = WeightsTable;
 		AP11ManeuverPAD(manopt, *form);
 		sprintf(form->purpose, "MCC-4");
+		sprintf(form->remarks, "SPS, PTC REFSMMAT. Table I-5 TIG 77:38:14, nominally zero.");
 		TimeofIgnition = P30TIG;
 		DeltaV_LVLH = dV_LVLH;
 
@@ -676,7 +812,7 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 
 		sv = StateVectorCalc(calcParams.src);
 		WeightsTable = GetWeightsTable(calcParams.src, true, true);
-		if (fcn == 27)
+		if (fcn == 27 && length(DeltaV_LVLH) >= 0.3048)
 		{
 			sv1 = ExecuteManeuver(sv, TimeofIgnition, DeltaV_LVLH, WeightsTable.LMAscWeight + WeightsTable.LMDscWeight, RTCC_ENGINETYPE_CSMSPS);
 			WeightsTable.CSMWeight = sv1.mass;
@@ -724,6 +860,10 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 			sprintf(form->remarks, "Docked, preferred REFSMMAT");
 		}
 		sprintf(form->purpose, "PC+2");
+		if (fcn == 28)
+		{
+			sprintf(form->remarks, "Table I-7 note 5 assumes MCC-4; MCC-4 was not executed");
+		}
 		form->lat = res.latitude * DEG;
 		form->lng = res.longitude * DEG;
 		form->RTGO = res.RTGO;
@@ -1688,7 +1828,6 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 		case 9: //LM DAP with V42
 		case 10: //Liftoff initialization from the live launch azimuth
 		case 15: //TLI evaluation from the LVDC timebase
-		case 25: //MCC-4 perilune test, Mission Techniques H-2
 		case 29: //LOI from the Apollo 14 SFP
 		case 30:
 		case 33: //LOI evaluation
