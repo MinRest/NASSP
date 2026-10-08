@@ -51,9 +51,10 @@ using namespace nassp;
 // Table I-7 pass times gate the block-data and abort pads.
 // Press kit: S-IVB evasive 04:19, propulsive dump 04:42, GET sync about 55 h.
 // CSM/LM ejection sep, flight plan p. 3-6: the pad is passed at 03:30 and the
-// burn is TLI cutoff + 1:20. Pages 3-6, 3-8, and 3-9 have no MSFN state-vector uplink.
+// burn is TLI cutoff + 1:20. The CSM state-vector uplink on that page is 03:50.
+// Later UPLINK lines are coast vectors or the maneuver target load, at the printed GET.
 // Table I-3 fuel-cell times, Table I-7 pass times, and Table I-11 P23 times gate the
-// translunar coast. There is no repeating state-vector cycle in the flight plan.
+// translunar coast. State-vector uplinks are the printed UPLINK lines, not a fixed cycle.
 
 static double A14GET(int h, int m, int s)
 {
@@ -98,10 +99,13 @@ void MCC::MissionSequence_H3()
 			break;
 		}
 		break;
-	case MST_H3_TRANSLUNAR_EJECT_SEP: //CSM/LM sep pad until the p. 3-8 S-IVB yaw at 04:09
-		UpdateMacro(UTP_PADONLY, PT_AP11MNV, mcc_calcs.GETEval(A14GET(4, 9, 0)), 39, MST_H3_TRANSLUNAR_DAY1_3);
+	case MST_H3_TRANSLUNAR_EJECT_SEP: //CSM/LM sep pad until the p. 3-6 state-vector uplink at 03:50
+		UpdateMacro(UTP_PADONLY, PT_AP11MNV, mcc_calcs.GETEval(A14GET(3, 50, 0)), 39, MST_H3_TRANSLUNAR_SV_0350);
 		break;
-	case MST_H3_TRANSLUNAR_DAY1_3: //S-IVB evasive at 04:19, after LM ejection. No SV uplink here.
+	case MST_H3_TRANSLUNAR_SV_0350: //p. 3-6: UPLINK TO CSM, CSM S.V., just before ejection
+		UpdateMacro(UTP_CMCUPLINKONLY, PT_NONE, mcc_calcs.GETEval(A14GET(4, 9, 0)), 5, MST_H3_TRANSLUNAR_DAY1_3);
+		break;
+	case MST_H3_TRANSLUNAR_DAY1_3: //S-IVB evasive at 04:19. The CSM state vector was uplinked at 03:50.
 		switch (SubState) {
 		case 0:
 			if (cm->GetStage() >= CSM_LEM_STAGE)
@@ -158,10 +162,9 @@ void MCC::MissionSequence_H3()
 			break;
 		}
 		break;
-	case MST_H3_TRANSLUNAR_DAY1_4: //TB8 / propulsive dump at 04:42, then L/O+15 at 06:00
-		// No CSM or LM state-vector uplink from 03:00 to 05:00. P. 3-6 V66 is the crew
-		// copying the CSM vector into the LM. P. 3-8 (04:00-05:00) has no uplink. The
-		// 05:20 p. 3-9 uplink is the PTC orientation, and 06:00 is the L/O+15 P37 pad.
+	case MST_H3_TRANSLUNAR_DAY1_4: //TB8 / propulsive dump at 04:42, then the p. 3-10 PTC uplink at 05:20
+		// The V66 on p. 3-6 is the crew copying the CSM vector into the LM. The MSFN
+		// uplink on that page is the 03:50 CSM state vector. P. 3-9 (04:00-05:00) has none.
 		switch (SubState) {
 		case 0:
 			if (sivb == NULL)
@@ -183,21 +186,21 @@ void MCC::MissionSequence_H3()
 			setSubState(1);
 			break;
 		case 1:
-			if (mcc_calcs.GETEval(A14GET(6, 0, 0)))
+			if (mcc_calcs.GETEval(A14GET(5, 20, 0)))
 			{
 				SlowIfDesired();
-				setState(MST_H3_TRANSLUNAR_DAY1_5);
+				setState(MST_H3_TRANSLUNAR_DAY1_6);
 			}
 			break;
 		}
 		break;
-	case MST_H3_TRANSLUNAR_DAY1_5: //L/O+15 passed at 06:00. PTC REFSMMAT at the 09:30 P23
-		UpdateMacro(UTP_PADONLY, PT_P37PAD, mcc_calcs.GETEval(A14GET(9, 30, 0)), 16, MST_H3_TRANSLUNAR_DAY1_6);
+	case MST_H3_TRANSLUNAR_DAY1_5: //L/O+15 voice pad at 06:00, held to the p. 3-15 MCC-1 uplink
+		UpdateMacro(UTP_PADONLY, PT_P37PAD, mcc_calcs.GETEval(A14GET(10, 20, 0)), 16, MST_H3_TRANSLUNAR_DAY1_7);
 		break;
-	case MST_H3_TRANSLUNAR_DAY1_6: //PTC REFSMMAT at the 09:30 P23. Epoch is 166:10:30, not TEI.
-		UpdateMacro(UTP_CMCUPLINKONLY, PT_NONE, mcc_calcs.GETEval(A14GET(11, 30, 0)), 18, MST_H3_TRANSLUNAR_DAY1_7);
+	case MST_H3_TRANSLUNAR_DAY1_6: //p. 3-10 PTC orientation uplink at 05:20. Epoch is 166:10:30, not TEI.
+		UpdateMacro(UTP_CMCUPLINKONLY, PT_NONE, mcc_calcs.GETEval(A14GET(6, 0, 0)), 18, MST_H3_TRANSLUNAR_DAY1_5);
 		break;
-	case MST_H3_TRANSLUNAR_DAY1_7: //MCC-1 decision at the Table I-3 11:30 purge, before TIG 11:36:33
+	case MST_H3_TRANSLUNAR_DAY1_7: //MCC-1 decision, then the p. 3-15 pad, state vector, and target load
 		UpdateMacro(UTP_NONE, PT_NONE, true, 19, MST_H3_TRANSLUNAR_DAY1_8);
 		break;
 	case MST_H3_TRANSLUNAR_DAY1_8: //MCC-1 pad, then block data 2 at 14:00
@@ -209,59 +212,68 @@ void MCC::MissionSequence_H3()
 	case MST_H3_TRANSLUNAR_DAY1_10: //PTC quads, then MCC-2 evaluation at the 28:30 P23
 		UpdateMacro(UTP_PADONLY, PT_GENERIC, mcc_calcs.GETEval(A14GET(28, 30, 0)), 140, MST_H3_TRANSLUNAR_DAY1_11);
 		break;
-	case MST_H3_TRANSLUNAR_DAY1_11:
-		UpdateMacro(UTP_NONE, PT_NONE, SubStateTime > 5.0 * 60.0, 20, MST_H3_TRANSLUNAR_DAY1_12);
+	case MST_H3_TRANSLUNAR_DAY1_11: //Hold the evaluation until the p. 3-30 uplink at 29:30
+		UpdateMacro(UTP_NONE, PT_NONE, mcc_calcs.GETEval(A14GET(29, 30, 0)), 20, MST_H3_TRANSLUNAR_DAY1_12);
 		break;
-	case MST_H3_TRANSLUNAR_DAY1_12: //MCC-2 pad. Flyby data is passed at 35:00
+	case MST_H3_TRANSLUNAR_DAY1_12: //MCC-2 pad, state vector, and target load. Flyby data is passed at 35:00
 		UpdateMacro(UTP_PADWITHCMCUPLINK, PT_AP11MNV, mcc_calcs.GETEval(A14GET(35, 0, 0)), 22, MST_H3_TRANSLUNAR_DAY2_1);
 		break;
-	case MST_H3_TRANSLUNAR_DAY2_1: //Flyby pad, then the 55 h GET-sync window
-		UpdateMacro(UTP_PADONLY, PT_AP11MNV, mcc_calcs.GETEval(A14GET(55, 0, 0)), 23, MST_H3_TRANSLUNAR_DAY2_2);
+	case MST_H3_TRANSLUNAR_DAY2_1: //Flyby pad until the p. 3-42 coast state vector at 39:30
+		UpdateMacro(UTP_PADONLY, PT_AP11MNV, mcc_calcs.GETEval(A14GET(39, 30, 0)), 23, MST_H3_TRANSLUNAR_SV_3930);
 		break;
-	case MST_H3_TRANSLUNAR_DAY2_2: //GET sync note from 55:00 until the MCC-3 pass at 60:20
-		UpdateMacro(UTP_NONE, PT_NONE, mcc_calcs.GETEval(A14GET(60, 20, 0)), 501, MST_H3_TRANSLUNAR_DAY3_1);
+	case MST_H3_TRANSLUNAR_SV_3930: //p. 3-42: UPLINK TO CSM, CSM S.V. & V66
+		UpdateMacro(UTP_CMCUPLINKONLY, PT_NONE, mcc_calcs.GETEval(A14GET(54, 30, 0)), 5, MST_H3_TRANSLUNAR_SV_5430);
 		break;
-	case MST_H3_TRANSLUNAR_DAY2_3: //Saved state. No separate coast SV; MCC-3 carries its own.
-		UpdateMacro(UTP_NONE, PT_NONE, mcc_calcs.GETEval(A14GET(60, 20, 0)), 501, MST_H3_TRANSLUNAR_DAY3_1);
+	case MST_H3_TRANSLUNAR_SV_5430: //p. 3-52: UPLINK TO CSM, CSM S.V. & V66, then the 55:00 sync
+		UpdateMacro(UTP_CMCUPLINKONLY, PT_NONE, mcc_calcs.GETEval(A14GET(55, 0, 0)), 5, MST_H3_TRANSLUNAR_DAY2_2);
+		break;
+	case MST_H3_TRANSLUNAR_DAY2_2: //GET sync note from 55:00 until the p. 3-57 MCC-3 uplink
+		UpdateMacro(UTP_NONE, PT_NONE, mcc_calcs.GETEval(A14GET(59, 20, 0)), 501, MST_H3_TRANSLUNAR_DAY3_1);
+		break;
+	case MST_H3_TRANSLUNAR_DAY2_3: //Saved state. MCC-3 carries the state vector and target load.
+		UpdateMacro(UTP_NONE, PT_NONE, mcc_calcs.GETEval(A14GET(59, 20, 0)), 501, MST_H3_TRANSLUNAR_DAY3_1);
 		break;
 	case MST_H3_TRANSLUNAR_DAY2_4:
-		if (mcc_calcs.GETEval(A14GET(60, 20, 0)))
+		if (mcc_calcs.GETEval(A14GET(59, 20, 0)))
 		{
 			setState(MST_H3_TRANSLUNAR_DAY3_1);
 		}
 		break;
-	case MST_H3_TRANSLUNAR_DAY3_1: //MCC-3. A scrub still reaches the 76:00 PC+2 pass
-		UpdateMacro(UTP_PADWITHCMCUPLINK, PT_AP11MNV, SubStateTime > 5.0 * 60.0, 24, MST_H3_TRANSLUNAR_DAY3_2, scrubbed, mcc_calcs.GETEval(A14GET(76, 0, 0)), MST_H3_TRANSLUNAR_DAY4_1);
+	case MST_H3_TRANSLUNAR_DAY3_1: //MCC-3 at 59:20. A scrub still reaches the 76:30 PC+2 pass
+		UpdateMacro(UTP_PADWITHCMCUPLINK, PT_AP11MNV, SubStateTime > 5.0 * 60.0, 24, MST_H3_TRANSLUNAR_DAY3_2, scrubbed, mcc_calcs.GETEval(A14GET(76, 30, 0)), MST_H3_TRANSLUNAR_DAY4_1);
 		break;
 	case MST_H3_TRANSLUNAR_DAY3_2:
-		UpdateMacro(UTP_PADONLY, PT_GENERIC, mcc_calcs.GETEval(A14GET(76, 0, 0)), 140, MST_H3_TRANSLUNAR_DAY4_1);
+		UpdateMacro(UTP_PADONLY, PT_GENERIC, mcc_calcs.GETEval(A14GET(76, 30, 0)), 140, MST_H3_TRANSLUNAR_DAY4_1);
 		break;
-	case MST_H3_TRANSLUNAR_DAY4_1: //MCC-4 decision at the 76:00 PC+2 pass
+	case MST_H3_TRANSLUNAR_DAY4_1: //MCC-4 decision at the p. 3-70 uplink, 76:30
 		UpdateMacro(UTP_NONE, PT_NONE, true, 25, MST_H3_TRANSLUNAR_DAY4_2, scrubbed, true, MST_H3_TRANSLUNAR_NO_MCC4_2);
 		break;
 	case MST_H3_TRANSLUNAR_NO_MCC4_1: //Saved state. PC+2 does not wait on an extra SV.
-		if (mcc_calcs.GETEval(A14GET(76, 0, 0)))
+		if (mcc_calcs.GETEval(A14GET(76, 30, 0)))
 		{
 			setState(MST_H3_TRANSLUNAR_NO_MCC4_2);
 		}
 		break;
-	case MST_H3_TRANSLUNAR_NO_MCC4_2: //PC+2 without MCC-4, passed at 76:00, held to the 79:30 TEI-4
-		UpdateMacro(UTP_PADONLY, PT_AP11MNV, mcc_calcs.GETEval(A14GET(79, 30, 0)), 28, MST_H3_TRANSLUNAR_NO_MCC4_3);
+	case MST_H3_TRANSLUNAR_NO_MCC4_2: //PC+2 without MCC-4, passed at 76:30, held to the preliminary LOI
+		UpdateMacro(UTP_PADONLY, PT_AP11MNV, mcc_calcs.GETEval(A14GET(79, 10, 0)), 28, MST_H3_TRANSLUNAR_NO_MCC4_3);
 		break;
 	case MST_H3_TRANSLUNAR_NO_MCC4_3:
 		UpdateMacro(UTP_PADWITHCMCUPLINK, PT_AP11MNV, SubStateTime > 5.0 * 60.0, 29, MST_H3_TRANSLUNAR_DAY4_5);
 		break;
-	case MST_H3_TRANSLUNAR_DAY4_2: //MCC-4 pad, then PC+2 in the same 76:00 pass
+	case MST_H3_TRANSLUNAR_DAY4_2: //MCC-4 pad, state vector, and target load, then PC+2
 		UpdateMacro(UTP_PADWITHCMCUPLINK, PT_AP11MNV, true, 26, MST_H3_TRANSLUNAR_DAY4_3);
 		break;
 	case MST_H3_TRANSLUNAR_DAY4_3:
-		UpdateMacro(UTP_PADONLY, PT_AP11MNV, mcc_calcs.GETEval(A14GET(79, 30, 0)), 27, MST_H3_TRANSLUNAR_DAY4_4);
+		UpdateMacro(UTP_PADONLY, PT_AP11MNV, mcc_calcs.GETEval(A14GET(79, 10, 0)), 27, MST_H3_TRANSLUNAR_DAY4_4);
 		break;
-	case MST_H3_TRANSLUNAR_DAY4_4: //Single LOI pad. No second final-update time was in the tables
-		UpdateMacro(UTP_PADWITHCMCUPLINK, PT_AP11MNV, SubStateTime > 5.0 * 60.0, 30, MST_H3_TRANSLUNAR_DAY4_5);
+	case MST_H3_TRANSLUNAR_DAY4_4: //p. 3-75 preliminary LOI: state vector, target load, landing-site orientation
+		UpdateMacro(UTP_PADWITHCMCUPLINK, PT_AP11MNV, SubStateTime > 5.0 * 60.0, 29, MST_H3_TRANSLUNAR_DAY4_5);
 		break;
-	case MST_H3_TRANSLUNAR_DAY4_5: //TEI-4, passed at 79:30
-		UpdateMacro(UTP_PADONLY, PT_AP11MNV, SubStateTime > 5.0 * 60.0, 41, MST_H3_TRANSLUNAR_DAY4_6);
+	case MST_H3_TRANSLUNAR_DAY4_5: //TEI-4, passed with the preliminary LOI, held to the final LOI
+		UpdateMacro(UTP_PADONLY, PT_AP11MNV, mcc_calcs.GETEval(A14GET(81, 30, 0)), 41, MST_H3_TRANSLUNAR_LOI_FINAL);
+		break;
+	case MST_H3_TRANSLUNAR_LOI_FINAL: //p. 3-77 final LOI: state vector, target load, landing-site orientation
+		UpdateMacro(UTP_PADWITHCMCUPLINK, PT_AP11MNV, SubStateTime > 5.0 * 60.0, 29, MST_H3_TRANSLUNAR_DAY4_6);
 		break;
 	case MST_H3_TRANSLUNAR_DAY4_6: //Rev 1 map, held through the LOI burn
 		UpdateMacro(UTP_PADONLY, PT_AP10MAPUPDATE, mcc_calcs.GETEval(rtcc->TimeofIgnition + 7.0 * 60.0), 60, MST_H3_TRANSLUNAR_DAY4_8);

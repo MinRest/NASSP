@@ -48,8 +48,14 @@ See http://nassp.sourceforge.net/license/ for more details.
 #define MST_H3_EPO4			14
 #define MST_H3_TRANSLUNAR_DAY1_1	20
 #define MST_H3_TRANSLUNAR_DAY1_2	21
-// CSM/LM ejection sep pad. 32 is unused by the H1 script, so earlier states stay put.
+// CSM/LM ejection sep pad. 32-36 are unused by the H1 script, so earlier states stay put.
 #define MST_H3_TRANSLUNAR_EJECT_SEP	32
+// Coast CSM state-vector uplinks printed in the flight plan. Same function, different GET.
+#define MST_H3_TRANSLUNAR_SV_0350	33
+#define MST_H3_TRANSLUNAR_SV_3930	34
+#define MST_H3_TRANSLUNAR_SV_5430	35
+// Final LOI pad. Preliminary LOI is the 79:10 update; this one is 81:30.
+#define MST_H3_TRANSLUNAR_LOI_FINAL	36
 #define MST_H3_TRANSLUNAR_DAY1_3	22
 #define MST_H3_TRANSLUNAR_DAY1_4	23
 #define MST_H3_TRANSLUNAR_DAY1_5	24
