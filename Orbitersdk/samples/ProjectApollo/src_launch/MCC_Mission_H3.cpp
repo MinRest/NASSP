@@ -51,7 +51,8 @@ using namespace nassp;
 // Table I-7 pass times gate the block-data and abort pads.
 // Press kit: S-IVB evasive 04:19, propulsive dump 04:42, GET sync about 55 h.
 // CSM/LM ejection sep, flight plan p. 3-6: the pad is passed at 03:30 and the
-// burn is TLI cutoff + 1:20. The CSM state-vector uplink on that page is 03:50.
+// burn is TLI cutoff + 1:20. The line just before 04:00 on that page is the
+// crew V66, copying the CSM state vector into the LM. It is not an MSFN uplink.
 // Later UPLINK lines are coast vectors or the maneuver target load, at the printed GET.
 // Table I-3 fuel-cell times, Table I-7 pass times, and Table I-11 P23 times gate the
 // translunar coast. State-vector uplinks are the printed UPLINK lines, not a fixed cycle.
@@ -99,13 +100,10 @@ void MCC::MissionSequence_H3()
 			break;
 		}
 		break;
-	case MST_H3_TRANSLUNAR_EJECT_SEP: //CSM/LM sep pad until the p. 3-6 state-vector uplink at 03:50
-		UpdateMacro(UTP_PADONLY, PT_AP11MNV, mcc_calcs.GETEval(A14GET(3, 50, 0)), 39, MST_H3_TRANSLUNAR_SV_0350);
+	case MST_H3_TRANSLUNAR_EJECT_SEP: //CSM/LM sep pad, then the S-IVB APS evasive. No uplink on p. 3-6.
+		UpdateMacro(UTP_PADONLY, PT_AP11MNV, mcc_calcs.GETEval(A14GET(3, 50, 0)), 39, MST_H3_TRANSLUNAR_DAY1_3);
 		break;
-	case MST_H3_TRANSLUNAR_SV_0350: //p. 3-6: UPLINK TO CSM, CSM S.V., just before ejection
-		UpdateMacro(UTP_CMCUPLINKONLY, PT_NONE, mcc_calcs.GETEval(A14GET(4, 9, 0)), 5, MST_H3_TRANSLUNAR_DAY1_3);
-		break;
-	case MST_H3_TRANSLUNAR_DAY1_3: //S-IVB evasive at 04:19. The CSM state vector was uplinked at 03:50.
+	case MST_H3_TRANSLUNAR_DAY1_3: //S-IVB APS evasive at 04:19, ground command. No CSM uplink precedes it.
 		switch (SubState) {
 		case 0:
 			if (cm->GetStage() >= CSM_LEM_STAGE)
@@ -163,8 +161,8 @@ void MCC::MissionSequence_H3()
 		}
 		break;
 	case MST_H3_TRANSLUNAR_DAY1_4: //TB8 / propulsive dump at 04:42, then the p. 3-10 PTC uplink at 05:20
-		// The V66 on p. 3-6 is the crew copying the CSM vector into the LM. The MSFN
-		// uplink on that page is the 03:50 CSM state vector. P. 3-9 (04:00-05:00) has none.
+		// The V66 on p. 3-6 is the crew copying the CSM vector into the LM. That page
+		// has no MSFN state-vector uplink. P. 3-9 is the S-IVB APS evasive at 04:19.
 		switch (SubState) {
 		case 0:
 			if (sivb == NULL)

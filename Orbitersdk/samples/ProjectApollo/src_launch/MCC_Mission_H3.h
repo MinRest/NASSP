@@ -51,7 +51,7 @@ See http://nassp.sourceforge.net/license/ for more details.
 // CSM/LM ejection sep pad. 32-36 are unused by the H1 script, so earlier states stay put.
 #define MST_H3_TRANSLUNAR_EJECT_SEP	32
 // Coast CSM state-vector uplinks printed in the flight plan. Same function, different GET.
-#define MST_H3_TRANSLUNAR_SV_0350	33
+// 33 is unused. The p. 3-6 line before 04:00 is the crew V66, not an uplink state.
 #define MST_H3_TRANSLUNAR_SV_3930	34
 #define MST_H3_TRANSLUNAR_SV_5430	35
 // Final LOI pad. Preliminary LOI is the 79:10 update; this one is 81:30.
