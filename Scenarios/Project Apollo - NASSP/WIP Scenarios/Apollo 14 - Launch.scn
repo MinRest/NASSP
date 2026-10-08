@@ -843,7 +843,7 @@ LVIMU_END
   CMPAD3402 76370
   CMPAD3403 41106
   <Checklist>
-    FILE Doc\Project Apollo - NASSP\Checklists\CSM Default Checklists.xls
+    FILE Doc\Project Apollo - NASSP\Checklists\Apollo 14 Checklists.xls
   </Checklist>  
 END
 Crawler-Transporter:ProjectApollo\Crawler
