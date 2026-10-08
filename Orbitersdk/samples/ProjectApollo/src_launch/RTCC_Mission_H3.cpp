@@ -296,6 +296,43 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 		EZANCHR1.AnchorVectors[9].Vector.GMT = 0.0;
 	}
 	break;
+	case 39: //CSM/LM ejection sep. External delta-V from the live state and REFSMMAT.
+	{
+		AP11ManPADOpt opt;
+		AP11MNV *form = (AP11MNV *)pad;
+
+		// Flight plan p. 3-6 (03:00-04:00): "TLI CUTOFF + 1 HR 20 MIN", "CSM/LM EJECTION",
+		// "dVT: 0.4 FPS", "ULLAGE: NONE". The note is a 4-jet RCS -X translation for 3 s
+		// (about 0.4 fps) after the spring ejection. HSI-43756 Table IX premission SC
+		// ejection is 03:56:34. Table X CSM/LM SEP prelaunch is 03:56:34, 3.0 s, 0.4 fps
+		// (real-time plan 03:56:00 and 0.3 fps; flown 05:47:25 and 0.8 fps after the probe
+		// delay, p. 4 and 71-FM54-41 p. 2). This pad uses the flight-plan TIG and 0.4 fps.
+		// calcParams.TLI is TLI burnout, so cutoff + 1:20 is the p. 3-6 rule.
+		if (calcParams.TLI > 1.0)
+		{
+			opt.TIG = calcParams.TLI + 80.0 * 60.0;
+		}
+		else
+		{
+			opt.TIG = A14SS(3, 56, 34.0);
+		}
+		// After the p. 3-6 dock, CSM +X points at the LM and the S-IVB behind it, so -X
+		// is away from the S-IVB and posigrade (LVLH +X). No component table is printed.
+		// Minus-4 points body +X opposite this delta-V. The FDAI is that solution, not
+		// the dock angles 301/338/041, and not the Apollo 11 evasive vector.
+		opt.dV_LVLH = _V(0.4, 0.0, 0.0) * 0.3048;
+		opt.enginetype = RTCC_ENGINETYPE_CSMRCSMINUS4;
+		opt.HeadsUp = true;
+		opt.UllageDT = 0.0;
+		opt.REFSMMAT = GetREFSMMATfromAGC(&mcc->cm->agc.vagc, true);
+		opt.RV_MCC = StateVectorCalcEphem(calcParams.src);
+		opt.WeightsTable = GetWeightsTable(calcParams.src, true, true);
+
+		AP11ManeuverPAD(opt, *form);
+		sprintf(form->purpose, "CSM/LM SEP");
+		sprintf(form->remarks, "p3-6 4-jet -X, 0.4 fps, no ullage. TIG = TLI cutoff +1:20. Table X prelaunch.");
+	}
+	break;
 	case 13: //L/O+8. Table I-7: GETI 8:00, GETIL 46:29, MPL
 	{
 		EntryOpt entopt;

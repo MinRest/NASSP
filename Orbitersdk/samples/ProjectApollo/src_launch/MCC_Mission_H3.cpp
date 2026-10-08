@@ -50,6 +50,8 @@ using namespace nassp;
 // Table I-6: PDI 108:42:01, ascent 142:24:29, LM deorbit 147:52:58.9.
 // Table I-7 pass times gate the block-data and abort pads.
 // Press kit: S-IVB evasive 04:19, propulsive dump 04:42, GET sync about 55 h.
+// CSM/LM ejection sep, flight plan p. 3-6: the pad is passed at 03:30 and the
+// burn is TLI cutoff + 1:20. Pages 3-6, 3-8, and 3-9 have no MSFN state-vector uplink.
 // Table I-3 fuel-cell times, Table I-7 pass times, and Table I-11 P23 times gate the
 // translunar coast. There is no repeating state-vector cycle in the flight plan.
 
@@ -80,7 +82,7 @@ void MCC::MissionSequence_H3()
 	case MST_H3_TRANSLUNAR_DAY1_1: //TLI evaluation. Second opportunity is the in-tree TLI file, GET 3:00
 		UpdateMacro(UTP_NONE, PT_NONE, true, 15, MST_H3_TRANSLUNAR_DAY1_2, scrubbed, mcc_calcs.GETEval(3.0 * 3600.0), MST_H3_EPO1);
 		break;
-	case MST_H3_TRANSLUNAR_DAY1_2: //Coast to the press-kit evasive time
+	case MST_H3_TRANSLUNAR_DAY1_2: //TLI call, then the p. 3-6 pre-ejection call at 03:30
 		switch (SubState) {
 		case 0:
 			addMessage("TLI");
@@ -88,15 +90,18 @@ void MCC::MissionSequence_H3()
 			setSubState(1);
 			break;
 		case 1:
-			if (mcc_calcs.GETEval(A14GET(4, 19, 0)))
+			if (mcc_calcs.GETEval(A14GET(3, 30, 0)))
 			{
 				SlowIfDesired();
-				setState(MST_H3_TRANSLUNAR_DAY1_3);
+				setState(MST_H3_TRANSLUNAR_EJECT_SEP);
 			}
 			break;
 		}
 		break;
-	case MST_H3_TRANSLUNAR_DAY1_3: //S-IVB evasive at 04:19, after LM ejection
+	case MST_H3_TRANSLUNAR_EJECT_SEP: //CSM/LM sep pad until the p. 3-8 S-IVB yaw at 04:09
+		UpdateMacro(UTP_PADONLY, PT_AP11MNV, mcc_calcs.GETEval(A14GET(4, 9, 0)), 39, MST_H3_TRANSLUNAR_DAY1_3);
+		break;
+	case MST_H3_TRANSLUNAR_DAY1_3: //S-IVB evasive at 04:19, after LM ejection. No SV uplink here.
 		switch (SubState) {
 		case 0:
 			if (cm->GetStage() >= CSM_LEM_STAGE)
@@ -154,6 +159,9 @@ void MCC::MissionSequence_H3()
 		}
 		break;
 	case MST_H3_TRANSLUNAR_DAY1_4: //TB8 / propulsive dump at 04:42, then L/O+15 at 06:00
+		// No CSM or LM state-vector uplink from 03:00 to 05:00. P. 3-6 V66 is the crew
+		// copying the CSM vector into the LM. P. 3-8 (04:00-05:00) has no uplink. The
+		// 05:20 p. 3-9 uplink is the PTC orientation, and 06:00 is the L/O+15 P37 pad.
 		switch (SubState) {
 		case 0:
 			if (sivb == NULL)

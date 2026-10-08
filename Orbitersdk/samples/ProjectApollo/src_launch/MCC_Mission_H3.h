@@ -48,6 +48,8 @@ See http://nassp.sourceforge.net/license/ for more details.
 #define MST_H3_EPO4			14
 #define MST_H3_TRANSLUNAR_DAY1_1	20
 #define MST_H3_TRANSLUNAR_DAY1_2	21
+// CSM/LM ejection sep pad. 32 is unused by the H1 script, so earlier states stay put.
+#define MST_H3_TRANSLUNAR_EJECT_SEP	32
 #define MST_H3_TRANSLUNAR_DAY1_3	22
 #define MST_H3_TRANSLUNAR_DAY1_4	23
 #define MST_H3_TRANSLUNAR_DAY1_5	24
