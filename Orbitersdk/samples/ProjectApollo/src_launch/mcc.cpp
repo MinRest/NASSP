@@ -2878,6 +2878,17 @@ void MCC::LoadState(FILEHANDLE scn) {
 	return;
 }
 
+// A non-finite pad field is the "-nan(ind)" the printer used to emit. The attitude
+// and trim calculations are fixed upstream. This is only the last check before print.
+static double MCCPadNumber(double a)
+{
+	if (!(a == a) || a > 1.0e8 || a < -1.0e8)
+	{
+		return 0.0;
+	}
+	return a;
+}
+
 // Draw PAD display
 void MCC::drawPad(bool writetofile){
 	char buffer[1024];
@@ -3218,7 +3229,7 @@ void MCC::drawPad(bool writetofile){
 		OrbMech::format_time_HHHMMSS(tmpbuf, form->GET05G);
 
 		sprintf(buffer, "%s\n%s PURPOSE\n%s PROP/GUID\n%+05.0f WT N47\n%+07.2f PTRIM N48\n%+07.2f YTRIM\n%+06d HRS GETI\n%+06d MIN N33\n%+07.2f SEC\n%+07.1f DVX N81\n%+07.1f DVY\n%+07.1f DVZ\nXXX%03.0f R\nXXX%03.0f P\nXXX%03.0f Y\n",
-			buffer, form->purpose, form->PropGuid, form->Weight, form->pTrim, form->yTrim, hh, mm, ss, form->dV.x, form->dV.y, form->dV.z, form->Att.x, form->Att.y, form->Att.z);
+			buffer, form->purpose, form->PropGuid, form->Weight, MCCPadNumber(form->pTrim), MCCPadNumber(form->yTrim), hh, mm, ss, form->dV.x, form->dV.y, form->dV.z, MCCPadNumber(form->Att.x), MCCPadNumber(form->Att.y), MCCPadNumber(form->Att.z));
 
 		if (form->type == 1)
 		{
@@ -3298,18 +3309,18 @@ void MCC::drawPad(bool writetofile){
 			OrbMech::format_time_HHHMMSS(tmpbuf, form->TB6P);
 			OrbMech::SStoHHMMSS(form->BurnTime, hh, mm, ss);
 
-			sprintf_s(buffer2, "%s TB6p\nXXX%03.0f R\nXXX%03.0f P TLI\nXXX%03.0f Y\nXXX%d:%02.0f BT\n%07.1f DVC\n%+05.0f VI\n", tmpbuf, form->IgnATT.x, form->IgnATT.y, form->IgnATT.z, mm, ss, form->dVC, form->VI);
+			sprintf_s(buffer2, "%s TB6p\nXXX%03.0f R\nXXX%03.0f P TLI\nXXX%03.0f Y\nXXX%d:%02.0f BT\n%07.1f DVC\n%+05.0f VI\n", tmpbuf, MCCPadNumber(form->IgnATT.x), MCCPadNumber(form->IgnATT.y), MCCPadNumber(form->IgnATT.z), mm, ss, form->dVC, form->VI);
 			buffer3.append(buffer2);
 			// type 0 omits SEP. type 2 also prints the extraction attitude.
 			if (form->type != 0)
 			{
-				sprintf_s(buffer2, "XXX%03.0f R\nXXX%03.0f P SEP\nXXX%03.0f Y\n", form->SepATT.x, form->SepATT.y, form->SepATT.z);
+				sprintf_s(buffer2, "XXX%03.0f R\nXXX%03.0f P SEP\nXXX%03.0f Y\n", MCCPadNumber(form->SepATT.x), MCCPadNumber(form->SepATT.y), MCCPadNumber(form->SepATT.z));
 				buffer3.append(buffer2);
 			}
 
 			if (form->type == 2)
 			{
-				sprintf_s(buffer2, "XXX%03.0f R\nXXX%03.0f P EXTRACTION\nXXX%03.0f Y\n", form->ExtATT.x, form->ExtATT.y, form->ExtATT.z);
+				sprintf_s(buffer2, "XXX%03.0f R\nXXX%03.0f P EXTRACTION\nXXX%03.0f Y\n", MCCPadNumber(form->ExtATT.x), MCCPadNumber(form->ExtATT.y), MCCPadNumber(form->ExtATT.z));
 				buffer3.append(buffer2);
 			}
 

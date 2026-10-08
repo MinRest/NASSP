@@ -5206,6 +5206,11 @@ VECTOR3 imulimit(VECTOR3 a)
 double imulimit(double a)
 {
 	//Input in degrees. Round and limit output to 0-359.
+	//A non-finite angle (the pad printer's "-nan(ind)") is not an attitude.
+	if (!(a == a) || a > 1.0e6 || a < -1.0e6)
+	{
+		return 0.0;
+	}
 	if (a < 0)
 	{
 		a += 360.0;

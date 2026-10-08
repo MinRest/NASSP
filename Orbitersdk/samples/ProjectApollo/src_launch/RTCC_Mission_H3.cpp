@@ -308,6 +308,9 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 		// (real-time plan 03:56:00 and 0.3 fps; flown 05:47:25 and 0.8 fps after the probe
 		// delay, p. 4 and 71-FM54-41 p. 2). This pad uses the flight-plan TIG and 0.4 fps.
 		// calcParams.TLI is TLI burnout, so cutoff + 1:20 is the p. 3-6 rule.
+		// Page 3-9 (04:00-05:00) puts 04:19 on "S-IVB APS EVASIVE BURN (GROUND COMMAND)".
+		// That is the S-IVB DCS evasive, not this CSM pad, so the TIG stays at cutoff + 1:20.
+		// The burn is RCS, not SPS, so the pad trim is zero. There is no SPS gimbal.
 		if (calcParams.TLI > 1.0)
 		{
 			opt.TIG = calcParams.TLI + 80.0 * 60.0;

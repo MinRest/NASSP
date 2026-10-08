@@ -3204,7 +3204,7 @@ void RTCC::AP10CSIPAD(const AP10CSIPADOpt &opt, AP10CSI &pad)
 
 	IMUangles = OrbMech::CALCGAR(opt.REFSMMAT, mul(OrbMech::tmat(M), M_R));
 
-	FDAIangles.z = asin(-cos(IMUangles.z)*sin(IMUangles.x));
+	FDAIangles.z = OrbMech::asin2(-cos(IMUangles.z)*sin(IMUangles.x));
 	if (abs(sin(FDAIangles.z)) != 1.0)
 	{
 		FDAIangles.y = atan2(((sin(IMUangles.y)*cos(IMUangles.x) + cos(IMUangles.y)*sin(IMUangles.z)*sin(IMUangles.x)) / cos(FDAIangles.z)), (cos(IMUangles.y)*cos(IMUangles.x) - sin(IMUangles.y)*sin(IMUangles.z)*sin(IMUangles.x)) / cos(FDAIangles.z));
@@ -3317,7 +3317,7 @@ void RTCC::AP11LMManeuverPAD(const AP11LMManPADOpt &opt, AP11LMMNV &pad)
 	IMUangles = OrbMech::CALCGAR(opt.REFSMMAT, mul(OrbMech::tmat(M), M_R));
 	pad.IMUAtt = IMUangles;
 
-	FDAIangles.z = asin(-cos(IMUangles.z)*sin(IMUangles.x));
+	FDAIangles.z = OrbMech::asin2(-cos(IMUangles.z)*sin(IMUangles.x));
 	if (abs(sin(FDAIangles.z)) != 1.0)
 	{
 		FDAIangles.y = atan2(((sin(IMUangles.y)*cos(IMUangles.x) + cos(IMUangles.y)*sin(IMUangles.z)*sin(IMUangles.x)) / cos(FDAIangles.z)), (cos(IMUangles.y)*cos(IMUangles.x) - sin(IMUangles.y)*sin(IMUangles.z)*sin(IMUangles.x)) / cos(FDAIangles.z));
@@ -3359,6 +3359,71 @@ void RTCC::AP11LMManeuverPAD(const AP11LMManPADOpt &opt, AP11LMMNV &pad)
 	pad.dVR = ManPADDVR / 0.3048;
 	pad.CSMWeight = opt.WeightsTable.CSMWeight / 0.45359237;
 	pad.LMWeight = (opt.WeightsTable.LMAscWeight + opt.WeightsTable.LMDscWeight)/ 0.45359237;
+}
+
+// CSM IMU angles from a REFSMMAT and a body triad. Returns radians (outer, inner, middle),
+// which the pad prints as roll, pitch, yaw. The middle-gimbal sine is the dot product of
+// two unit vectors. A value even one ulp outside [-1, 1] used to make asin return NaN,
+// and the gimbal-lock test never ran because it looked at that NaN. Unit both triads
+// first so a non-unit REFSMMAT or a non-unit thrust axis cannot push the dot product
+// out of range, then clamp and take the existing lock branch at +/- 90 deg.
+static VECTOR3 CSMIMUAttitude(MATRIX3 REFSMMAT, VECTOR3 X_B, VECTOR3 Y_B, VECTOR3 Z_B)
+{
+	VECTOR3 X_P, Y_P, Z_P;
+	double sMG, MG, OG, IG;
+
+	auto unitAxis = [](VECTOR3 v) -> VECTOR3
+	{
+		double m = length(v);
+		if (!(m == m) || m < 1e-8)
+		{
+			return _V(0, 0, 0);
+		}
+		return v / m;
+	};
+
+	X_P = unitAxis(_V(REFSMMAT.m11, REFSMMAT.m12, REFSMMAT.m13));
+	Y_P = unitAxis(_V(REFSMMAT.m21, REFSMMAT.m22, REFSMMAT.m23));
+	Z_P = unitAxis(_V(REFSMMAT.m31, REFSMMAT.m32, REFSMMAT.m33));
+	X_B = unitAxis(X_B);
+	Y_B = unitAxis(Y_B);
+	Z_B = unitAxis(Z_B);
+
+	// A zero REFSMMAT or a zero thrust axis has no attitude. Print zeros, not NaN.
+	if (length(X_P) < 0.5 || length(Y_P) < 0.5 || length(Z_P) < 0.5 || length(X_B) < 0.5)
+	{
+		return _V(0, 0, 0);
+	}
+	if (length(Y_B) < 0.5)
+	{
+		VECTOR3 fallback = (abs(X_B.z) < 0.9) ? _V(0, 0, 1) : _V(0, 1, 0);
+		Y_B = unitAxis(crossp(fallback, X_B));
+	}
+	if (length(Z_B) < 0.5)
+	{
+		Z_B = unitAxis(crossp(X_B, Y_B));
+	}
+
+	sMG = dotp(Y_P, X_B);
+	if (sMG > 1.0) sMG = 1.0;
+	if (sMG < -1.0) sMG = -1.0;
+	MG = asin(sMG);
+
+	// 0.0017 rad is the existing gimbal-lock deadband, about 0.1 deg.
+	if (abs(abs(MG) - PI05) < 0.0017)
+	{
+		OG = 0.0;
+		IG = atan2(dotp(X_P, Z_B), dotp(Z_P, Z_B));
+	}
+	else
+	{
+		OG = atan2(-dotp(Z_B, Y_P), dotp(Y_B, Y_P));
+		IG = atan2(-dotp(X_B, Z_P), dotp(X_B, X_P));
+	}
+	if (!(OG == OG)) OG = 0.0;
+	if (!(IG == IG)) IG = 0.0;
+	if (!(MG == MG)) MG = 0.0;
+	return _V(OG, IG, MG);
 }
 
 void RTCC::AP11ManeuverPAD(const AP11ManPADOpt &opt, AP11MNV &pad)
@@ -3467,29 +3532,8 @@ void RTCC::AP11ManeuverPAD(const AP11ManPADOpt &opt, AP11MNV &pad)
 	pad.HA_P30 = min(9999.9, (apo - R_E) / 1852.0);
 	pad.HP_P30 = (peri - R_E) / 1852.0;
 
-	//Attitude
-	VECTOR3 X_P, Y_P, Z_P;
-	X_P = _V(opt.REFSMMAT.m11, opt.REFSMMAT.m12, opt.REFSMMAT.m13);
-	Y_P = _V(opt.REFSMMAT.m21, opt.REFSMMAT.m22, opt.REFSMMAT.m23);
-	Z_P = _V(opt.REFSMMAT.m31, opt.REFSMMAT.m32, opt.REFSMMAT.m33);
-
-	double MG, OG, IG, C;
-
-	MG = asin(dotp(Y_P, aux.X_B));
-	C = abs(MG);
-
-	if (abs(C - PI05) < 0.0017)
-	{
-		OG = 0.0;
-		IG = atan2(dotp(X_P, aux.Z_B), dotp(Z_P, aux.Z_B));
-	}
-	else
-	{
-		OG = atan2(-dotp(aux.Z_B, Y_P), dotp(aux.Y_B, Y_P));
-		IG = atan2(-dotp(aux.X_B, Z_P), dotp(aux.X_B, X_P));
-	}
-
-	IMUangles = _V(OG, IG, MG);
+	//Attitude. Shared with the Apollo 7 pad and the DMT ignition attitude.
+	IMUangles = CSMIMUAttitude(opt.REFSMMAT, aux.X_B, aux.Y_B, aux.Z_B);
 
 	//Round IMU attitude to next degree
 	pad.Att = OrbMech::imulimit(IMUangles*DEG);
@@ -3514,13 +3558,17 @@ void RTCC::AP11ManeuverPAD(const AP11ManPADOpt &opt, AP11MNV &pad)
 		sprintf(pad.PropGuid, "RCS/G&N");
 	}
 
-	//Trim angles
+	//Trim angles. SPS pads use the GIMGBL gimbal, minus the engine cant, the same
+	// way the Apollo 11 and 12 pads do. An RCS burn has no SPS gimbal, so the
+	// trim stays zero. A non-finite gimbal must not reach the printer.
 	if (opt.enginetype == RTCC_ENGINETYPE_CSMSPS)
 	{
 		ManPADPTrim = aux.P_G - SystemParameters.MCTSPP;
 		ManPADYTrim = aux.Y_G - SystemParameters.MCTSYP;
 		pad.pTrim = ManPADPTrim * DEG;
 		pad.yTrim = ManPADYTrim * DEG;
+		if (!(pad.pTrim == pad.pTrim)) pad.pTrim = 0.0;
+		if (!(pad.yTrim == pad.yTrim)) pad.yTrim = 0.0;
 	}
 	else
 	{
@@ -3658,28 +3706,7 @@ void RTCC::AP7ManeuverPAD(const AP7ManPADOpt &opt, AP7MNV &pad)
 	pad.HP = ManPADPeri / 1852.0;
 
 	//Attitude
-	VECTOR3 X_P, Y_P, Z_P;
-	X_P = _V(opt.REFSMMAT.m11, opt.REFSMMAT.m12, opt.REFSMMAT.m13);
-	Y_P = _V(opt.REFSMMAT.m21, opt.REFSMMAT.m22, opt.REFSMMAT.m23);
-	Z_P = _V(opt.REFSMMAT.m31, opt.REFSMMAT.m32, opt.REFSMMAT.m33);
-
-	double MG, OG, IG, C;
-
-	MG = asin(dotp(Y_P, aux.X_B));
-	C = abs(MG);
-
-	if (abs(C - PI05) < 0.0017)
-	{
-		OG = 0.0;
-		IG = atan2(dotp(X_P, aux.Z_B), dotp(Z_P, aux.Z_B));
-	}
-	else
-	{
-		OG = atan2(-dotp(aux.Z_B, Y_P), dotp(aux.Y_B, Y_P));
-		IG = atan2(-dotp(aux.X_B, Z_P), dotp(aux.X_B, X_P));
-	}
-
-	IMUangles = _V(OG, IG, MG);
+	IMUangles = CSMIMUAttitude(opt.REFSMMAT, aux.X_B, aux.Y_B, aux.Z_B);
 
 	//Round IMU attitude to next degree
 	pad.Att = OrbMech::imulimit(IMUangles * DEG);
@@ -3711,6 +3738,8 @@ void RTCC::AP7ManeuverPAD(const AP7ManPADOpt &opt, AP7MNV &pad)
 		ManPADYTrim = aux.Y_G - SystemParameters.MCTSYP;
 		pad.pTrim = ManPADPTrim * DEG;
 		pad.yTrim = ManPADYTrim * DEG;
+		if (!(pad.pTrim == pad.pTrim)) pad.pTrim = 0.0;
+		if (!(pad.yTrim == pad.yTrim)) pad.yTrim = 0.0;
 	}
 	else
 	{
@@ -3877,7 +3906,7 @@ void RTCC::AP9LMTPIPAD(const AP9LMTPIPADOpt &opt, AP9LMTPI &pad)
 	M = _M(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0);
 	IMUangles = OrbMech::CALCGAR(opt.REFSMMAT, mul(OrbMech::tmat(M), Rot1));
 
-	FDAIangles.z = asin(-cos(IMUangles.z)*sin(IMUangles.x));
+	FDAIangles.z = OrbMech::asin2(-cos(IMUangles.z)*sin(IMUangles.x));
 	if (abs(sin(FDAIangles.z)) != 1.0)
 	{
 		FDAIangles.y = atan2(((sin(IMUangles.y)*cos(IMUangles.x) + cos(IMUangles.y)*sin(IMUangles.z)*sin(IMUangles.x)) / cos(FDAIangles.z)), (cos(IMUangles.y)*cos(IMUangles.x) - sin(IMUangles.y)*sin(IMUangles.z)*sin(IMUangles.x)) / cos(FDAIangles.z));
@@ -3925,7 +3954,7 @@ void RTCC::AP9LMCDHPAD(const AP9LMCDHPADOpt &opt, AP9LMCDH &pad)
 	M = _M(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0);
 	IMUangles = OrbMech::CALCGAR(opt.REFSMMAT, mul(OrbMech::tmat(M), Rot1));
 
-	FDAIangles.z = asin(-cos(IMUangles.z)*sin(IMUangles.x));
+	FDAIangles.z = OrbMech::asin2(-cos(IMUangles.z)*sin(IMUangles.x));
 	if (abs(sin(FDAIangles.z)) != 1.0)
 	{
 		FDAIangles.y = atan2(((sin(IMUangles.y)*cos(IMUangles.x) + cos(IMUangles.y)*sin(IMUangles.z)*sin(IMUangles.x)) / cos(FDAIangles.z)), (cos(IMUangles.y)*cos(IMUangles.x) - sin(IMUangles.y)*sin(IMUangles.z)*sin(IMUangles.x)) / cos(FDAIangles.z));
@@ -5762,7 +5791,7 @@ bool RTCC::PDI_PAD(const PDIPADOpt &opt, AP11PDIPAD &pad)
 	M = _M(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0);
 	IMUangles = OrbMech::CALCGAR(opt.REFSMMAT, mul(OrbMech::tmat(M), M_R));
 
-	FDAIangles.z = asin(-cos(IMUangles.z)*sin(IMUangles.x));
+	FDAIangles.z = OrbMech::asin2(-cos(IMUangles.z)*sin(IMUangles.x));
 	if (abs(sin(FDAIangles.z)) != 1.0)
 	{
 		FDAIangles.y = atan2(((sin(IMUangles.y)*cos(IMUangles.x) + cos(IMUangles.y)*sin(IMUangles.z)*sin(IMUangles.x)) / cos(FDAIangles.z)), (cos(IMUangles.y)*cos(IMUangles.x) - sin(IMUangles.y)*sin(IMUangles.z)*sin(IMUangles.x)) / cos(FDAIangles.z));
@@ -24930,27 +24959,16 @@ void RTCC::PMDDMT(int MPT_ID, unsigned ManNo, int REFSMMAT_ID, bool HeadsUp, Det
 		Y_P = _V(REFSMMAT.m21, REFSMMAT.m22, REFSMMAT.m23);
 		Z_P = _V(REFSMMAT.m31, REFSMMAT.m32, REFSMMAT.m33);
 
-		double MG, OG, IG, C;
-
-		MG = asin(dotp(Y_P, X_B));
-		C = abs(MG);
-
-		if (abs(C - PI05) < 0.0017)
-		{
-			OG = 0.0;
-			IG = atan2(dotp(X_P, Z_B), dotp(Z_P, Z_B));
-		}
-		else
-		{
-			OG = atan2(-dotp(Z_B, Y_P), dotp(Y_B, Y_P));
-			IG = atan2(-dotp(X_B, Z_P), dotp(X_B, X_P));
-		}
+		VECTOR3 IMUgimbal = CSMIMUAttitude(REFSMMAT, X_B, Y_B, Z_B);
+		double OG = IMUgimbal.x;
+		double IG = IMUgimbal.y;
+		double MG = IMUgimbal.z;
 
 		if (man->TVC == 3)
 		{
 			//LM
 			double Y, P, R;
-			Y = asin(-cos(MG)*sin(OG));
+			Y = OrbMech::asin2(-cos(MG)*sin(OG));
 			if (abs(sin(Y)) != 1.0)
 			{
 				R = atan2(sin(MG), cos(OG)*cos(MG));
@@ -25240,7 +25258,7 @@ VECTOR3 RTCC::EMMGFDAI(VECTOR3 Att, bool IsIMU) const
 		IGA = Att.y;
 		MGA = Att.z;
 
-		Y = asin(-cos(MGA)*sin(OGA));
+		Y = OrbMech::asin2(-cos(MGA)*sin(OGA));
 		if (Y < 0)
 		{
 			Y = Y + PI2;
@@ -28336,7 +28354,7 @@ void RTCC::PMMPAB(const RTEDMEDData &MED, const RTEDASTData &AST, const RTEDSPMD
 	}
 	else
 	{
-		Y = asin(-cos(Mid)*sin(Out));
+		Y = OrbMech::asin2(-cos(Mid)*sin(Out));
 		if (Y < 0)
 		{
 			Y += PI2;
@@ -42139,22 +42157,8 @@ void RTCC::RTACFGuidanceOpticsSupportTable(RTACFGOSTInput in, RTACFGOSTOutput &o
 		Y_B = X_P * b1 + Y_P * b2 + Z_P * b3;
 		Z_B = X_P * c1 + Y_P * c2 + Z_P * c3;
 
-		//Calculate IMU angles
-		X_P = _V(in.REFSMMAT.m11, in.REFSMMAT.m12, in.REFSMMAT.m13);
-		Y_P = _V(in.REFSMMAT.m21, in.REFSMMAT.m22, in.REFSMMAT.m23);
-		Z_P = _V(in.REFSMMAT.m31, in.REFSMMAT.m32, in.REFSMMAT.m33);
-
-		out.IMUAtt.z = asin(dotp(Y_P, X_B));
-		if (abs(abs(out.IMUAtt.z) - PI05) < 1e-8)
-		{
-			out.IMUAtt.x = 0.0;
-			out.IMUAtt.y = atan2(dotp(X_P, Z_B), dotp(Z_P, Z_B));
-		}
-		else
-		{
-			out.IMUAtt.x = atan2(-dotp(Y_P, Z_B), dotp(Y_P, Y_B));
-			out.IMUAtt.y = atan2(-dotp(Z_P, X_B), dotp(X_P, X_B));
-		}
+		//Same attitude solution as the maneuver pad, including the asin domain guard.
+		out.IMUAtt = CSMIMUAttitude(in.REFSMMAT, X_B, Y_B, Z_B);
 
 		if (out.IMUAtt.x < 0)
 		{

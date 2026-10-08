@@ -1385,7 +1385,32 @@ void CSMLMPoweredFlightIntegration::CalcBodyAttitude()
 			}
 		}
 		
-		Y_T = unit(crossp(A_T, sv_ff.R));
+		// Body +Y is perpendicular to the thrust and the radius. A radial burn makes
+		// that cross product vanish, and unit() of it is NaN. PIDREF and the LM pad
+		// already fall back to the orbit normal. Do the same here so every CSM pad
+		// that shares this integrator gets a real body triad.
+		VECTOR3 axis = crossp(A_T, sv_ff.R);
+		double axis_len = length(axis);
+		double r_len = length(sv_ff.R);
+		if (!(axis_len == axis_len) || axis_len < 1e-6 || (r_len > 1.0 && axis_len / r_len < 0.0017))
+		{
+			axis = crossp(sv_ff.R, sv_ff.V);
+			axis_len = length(axis);
+		}
+		if (!(axis_len == axis_len) || axis_len < 1e-6)
+		{
+			VECTOR3 fallback = (abs(A_T.z) < 0.9) ? _V(0, 0, 1) : _V(0, 1, 0);
+			axis = crossp(A_T, fallback);
+			axis_len = length(axis);
+		}
+		if (!(axis_len == axis_len) || axis_len < 1e-6)
+		{
+			Y_T = _V(0, 1, 0);
+		}
+		else
+		{
+			Y_T = axis / axis_len;
+		}
 
 		if (TArr.ThrusterCode == RTCC_ENGINETYPE_CSMRCSPLUS2 || TArr.ThrusterCode == RTCC_ENGINETYPE_CSMRCSPLUS4 || TArr.ThrusterCode == RTCC_ENGINETYPE_LMRCSPLUS2 || TArr.ThrusterCode == RTCC_ENGINETYPE_LMRCSPLUS4)
 		{

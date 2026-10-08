@@ -189,7 +189,7 @@ RTCC_GIMGBL_LABEL_3_2:
 	R = length(XCG[1]);
 	if (R > 10e-6)
 	{
-		RZ = asin(XCG[1].y / R);
+		RZ = OrbMech::asin2(XCG[1].y / R);
 		if (XCG[1].x > 10e-6)
 		{
 			RY = atan(-XCG[1].z / XCG[1].x);
