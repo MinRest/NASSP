@@ -477,10 +477,14 @@ void ChecklistController::load(FILEHANDLE scn)
 		{
 			ChecklistContainer temp;
 			temp.load(scn,*this);
-			if (active.program.group == -1)
-				active = temp;
-			else
-				action.push_back(temp);
+			// load() leaves group == -1 when the checklist set is empty.
+			if (temp.program.group != -1)
+			{
+				if (active.program.group == -1)
+					active = temp;
+				else
+					action.push_back(temp);
+			}
 			found = true;
 		}
 		if (!found && !strnicmp(line,ChecklistGroupStartString,strlen(ChecklistGroupStartString)))
@@ -549,6 +553,11 @@ bool ChecklistController::init(bool input)
 bool ChecklistController::spawnCheck(int group, bool failed, bool automagic)
 {
 	if (doSpawnCheck(group, failed, automagic)) {
+		// An empty group has no sequence. Drop it instead of calling into it.
+		if (active.program.group != -1 && active.set.size() == 0) {
+			active = ChecklistContainer();
+			return false;
+		}
 		waitForCompletion = (active.program.group != -1 && !active.sequence->checkIterate(&conn));
 		autoexecuteSlowDelay = active.sequence->getAutoexecuteSlowDelay(&conn);
 		return true;
@@ -771,6 +780,9 @@ void ChecklistController::timestep(double missiontime, SaturnEvents eventControl
 	if (active.program.group != -1) {
 		if (active.set.size() == 0) {
 			oapiWriteLogError("Invalid/empty checklist group! Something is wrong with your scenario.");
+			// sequence is begin()==end() on an empty set. Do not fall through into checkExec.
+			active = ChecklistContainer();
+			return;
 		}
 		else if (active.sequence->checkExec(missiontime + 1, active.startTime, lastItemTime, eventController, true)) {
 			active.sequence->setFlashing(&conn, flashing);

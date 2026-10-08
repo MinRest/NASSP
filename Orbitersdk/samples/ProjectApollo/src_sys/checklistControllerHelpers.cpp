@@ -933,8 +933,12 @@ void ChecklistContainer::load(FILEHANDLE scn, ChecklistController &controller)
 	if (!strnicmp(line,"INDEX",5))
 	{
 		sscanf (line+5,"%d",&integer);
-		if (integer < controller.groups.size()) { 
-			*this = ChecklistContainer(controller.groups[integer],controller,0);
+		if (integer < controller.groups.size()) {
+			ChecklistContainer loaded(controller.groups[integer],controller,0);
+			// Reject an empty set. Leave *this unset (group -1) and still
+			// consume the block so the scenario reader stays aligned.
+			if (loaded.set.size() != 0)
+				*this = loaded;
 		} else
 			return;
 	}
