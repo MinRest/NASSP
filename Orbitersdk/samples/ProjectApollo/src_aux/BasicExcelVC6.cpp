@@ -4290,7 +4290,11 @@ size_t Worksheet::CellTable::RowBlock::Read(const char* data)
 	Row row;
 	CellBlock cellBlock;
 	cellBlocks_.reserve(1000);
-	while (code != CODE::DBCELL)
+	// A real BIFF row block ends on DBCELL. xlwt omits DBCELL, so the next
+	// record is WINDOW2 (or YEOF on an empty sheet). Stop there without
+	// consuming it: CellTable::Read then sees a non-ROW code and returns.
+	// Reading past either record walks off the workbook buffer.
+	while (code != CODE::DBCELL && code != CODE::WINDOW2 && code != CODE::YEOF)
 	{
 		switch (code)
 		{
@@ -4318,7 +4322,8 @@ size_t Worksheet::CellTable::RowBlock::Read(const char* data)
 		}	
 		LittleEndian::Read(data, code, bytesRead, 2);
 	}
-	bytesRead += dbcell_.Read(data+bytesRead);
+	if (code == CODE::DBCELL)
+		bytesRead += dbcell_.Read(data+bytesRead);
 	return bytesRead;
 }
 size_t Worksheet::CellTable::RowBlock::Write(char* data)
