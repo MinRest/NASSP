@@ -3204,7 +3204,7 @@ void RTCC::AP10CSIPAD(const AP10CSIPADOpt &opt, AP10CSI &pad)
 
 	IMUangles = OrbMech::CALCGAR(opt.REFSMMAT, mul(OrbMech::tmat(M), M_R));
 
-	FDAIangles.z = OrbMech::asin2(-cos(IMUangles.z)*sin(IMUangles.x));
+	FDAIangles.z = asin2(-cos(IMUangles.z)*sin(IMUangles.x));
 	if (abs(sin(FDAIangles.z)) != 1.0)
 	{
 		FDAIangles.y = atan2(((sin(IMUangles.y)*cos(IMUangles.x) + cos(IMUangles.y)*sin(IMUangles.z)*sin(IMUangles.x)) / cos(FDAIangles.z)), (cos(IMUangles.y)*cos(IMUangles.x) - sin(IMUangles.y)*sin(IMUangles.z)*sin(IMUangles.x)) / cos(FDAIangles.z));
@@ -3317,7 +3317,7 @@ void RTCC::AP11LMManeuverPAD(const AP11LMManPADOpt &opt, AP11LMMNV &pad)
 	IMUangles = OrbMech::CALCGAR(opt.REFSMMAT, mul(OrbMech::tmat(M), M_R));
 	pad.IMUAtt = IMUangles;
 
-	FDAIangles.z = OrbMech::asin2(-cos(IMUangles.z)*sin(IMUangles.x));
+	FDAIangles.z = asin2(-cos(IMUangles.z)*sin(IMUangles.x));
 	if (abs(sin(FDAIangles.z)) != 1.0)
 	{
 		FDAIangles.y = atan2(((sin(IMUangles.y)*cos(IMUangles.x) + cos(IMUangles.y)*sin(IMUangles.z)*sin(IMUangles.x)) / cos(FDAIangles.z)), (cos(IMUangles.y)*cos(IMUangles.x) - sin(IMUangles.y)*sin(IMUangles.z)*sin(IMUangles.x)) / cos(FDAIangles.z));
@@ -3906,7 +3906,7 @@ void RTCC::AP9LMTPIPAD(const AP9LMTPIPADOpt &opt, AP9LMTPI &pad)
 	M = _M(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0);
 	IMUangles = OrbMech::CALCGAR(opt.REFSMMAT, mul(OrbMech::tmat(M), Rot1));
 
-	FDAIangles.z = OrbMech::asin2(-cos(IMUangles.z)*sin(IMUangles.x));
+	FDAIangles.z = asin2(-cos(IMUangles.z)*sin(IMUangles.x));
 	if (abs(sin(FDAIangles.z)) != 1.0)
 	{
 		FDAIangles.y = atan2(((sin(IMUangles.y)*cos(IMUangles.x) + cos(IMUangles.y)*sin(IMUangles.z)*sin(IMUangles.x)) / cos(FDAIangles.z)), (cos(IMUangles.y)*cos(IMUangles.x) - sin(IMUangles.y)*sin(IMUangles.z)*sin(IMUangles.x)) / cos(FDAIangles.z));
@@ -3954,7 +3954,7 @@ void RTCC::AP9LMCDHPAD(const AP9LMCDHPADOpt &opt, AP9LMCDH &pad)
 	M = _M(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0);
 	IMUangles = OrbMech::CALCGAR(opt.REFSMMAT, mul(OrbMech::tmat(M), Rot1));
 
-	FDAIangles.z = OrbMech::asin2(-cos(IMUangles.z)*sin(IMUangles.x));
+	FDAIangles.z = asin2(-cos(IMUangles.z)*sin(IMUangles.x));
 	if (abs(sin(FDAIangles.z)) != 1.0)
 	{
 		FDAIangles.y = atan2(((sin(IMUangles.y)*cos(IMUangles.x) + cos(IMUangles.y)*sin(IMUangles.z)*sin(IMUangles.x)) / cos(FDAIangles.z)), (cos(IMUangles.y)*cos(IMUangles.x) - sin(IMUangles.y)*sin(IMUangles.z)*sin(IMUangles.x)) / cos(FDAIangles.z));
@@ -5791,7 +5791,7 @@ bool RTCC::PDI_PAD(const PDIPADOpt &opt, AP11PDIPAD &pad)
 	M = _M(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0);
 	IMUangles = OrbMech::CALCGAR(opt.REFSMMAT, mul(OrbMech::tmat(M), M_R));
 
-	FDAIangles.z = OrbMech::asin2(-cos(IMUangles.z)*sin(IMUangles.x));
+	FDAIangles.z = asin2(-cos(IMUangles.z)*sin(IMUangles.x));
 	if (abs(sin(FDAIangles.z)) != 1.0)
 	{
 		FDAIangles.y = atan2(((sin(IMUangles.y)*cos(IMUangles.x) + cos(IMUangles.y)*sin(IMUangles.z)*sin(IMUangles.x)) / cos(FDAIangles.z)), (cos(IMUangles.y)*cos(IMUangles.x) - sin(IMUangles.y)*sin(IMUangles.z)*sin(IMUangles.x)) / cos(FDAIangles.z));
@@ -24968,7 +24968,7 @@ void RTCC::PMDDMT(int MPT_ID, unsigned ManNo, int REFSMMAT_ID, bool HeadsUp, Det
 		{
 			//LM
 			double Y, P, R;
-			Y = OrbMech::asin2(-cos(MG)*sin(OG));
+			Y = asin2(-cos(MG)*sin(OG));
 			if (abs(sin(Y)) != 1.0)
 			{
 				R = atan2(sin(MG), cos(OG)*cos(MG));
@@ -25258,7 +25258,7 @@ VECTOR3 RTCC::EMMGFDAI(VECTOR3 Att, bool IsIMU) const
 		IGA = Att.y;
 		MGA = Att.z;
 
-		Y = OrbMech::asin2(-cos(MGA)*sin(OGA));
+		Y = asin2(-cos(MGA)*sin(OGA));
 		if (Y < 0)
 		{
 			Y = Y + PI2;
@@ -28354,7 +28354,7 @@ void RTCC::PMMPAB(const RTEDMEDData &MED, const RTEDASTData &AST, const RTEDSPMD
 	}
 	else
 	{
-		Y = OrbMech::asin2(-cos(Mid)*sin(Out));
+		Y = asin2(-cos(Mid)*sin(Out));
 		if (Y < 0)
 		{
 			Y += PI2;
