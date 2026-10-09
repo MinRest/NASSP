@@ -115,13 +115,22 @@ static bool A14MPTBurnout(const MissionPlanTable &mpt, unsigned index, double gm
 	return true;
 }
 
+static PLAWDTOutput A14LiveWeights(RTCC *rtcc, VESSEL *v);
+static bool A14LMAttached(const PLAWDTOutput &tab);
+
 static void A14P37Line(RTCC *rtcc, EntryOpt &entopt, P37PAD *form, int i, const SV &sv, double tig, double tz)
 {
 	EntryResults res;
+	SV svUse = sv;
+	PLAWDTOutput wt = A14LiveWeights(rtcc, entopt.vessel);
 
+	// P37 has no printed weight. The solution mass is still the live configuration.
+	if (wt.ConfigWeight > 0.0)
+		svUse.mass = wt.ConfigWeight;
+	entopt.csmlmdocked = A14LMAttached(wt);
 	entopt.TIGguess = form->GETI[i] = tig;
 	entopt.t_Z = tz;
-	entopt.RV_MCC = sv;
+	entopt.RV_MCC = svUse;
 	rtcc->EntryTargeting(entopt, res);
 	form->dVT[i] = length(res.dV_LVLH) / 0.3048;
 	form->GET400K[i] = res.GET05G;
@@ -139,85 +148,140 @@ static void A14Landmark(LMARKTRKPADOpt &opt, AP11LMARKTRKPAD *form, int i, const
 	opt.LmkTime[i] = get;
 }
 
-// N47 on a CSM pad is the CSM, and the LM field is the LM. Apollo 11 and 12
-// print that LM figure in the remarks. The burn itself uses both.
+// nasspdefs.h LBS converts grams to pounds, so LBS*1000 converts kilograms.
+static double A14KgToLb(double kg)
+{
+	return kg * 0.0022046226218 * 1000.0;
+}
+
+static void A14FinishWeights(PLAWDTOutput &tab)
+{
+	const double area = 129.4 * 0.3048 * 0.3048;
+
+	if (tab.CSMWeight > 0.0)
+		tab.CSMArea = area;
+	if (tab.LMAscWeight > 0.0)
+		tab.LMAscArea = area;
+	if (tab.LMDscWeight > 0.0)
+		tab.LMDscArea = area;
+	tab.ConfigArea = tab.CSMArea;
+	if (tab.LMAscArea > tab.ConfigArea)
+		tab.ConfigArea = tab.LMAscArea;
+	if (tab.LMDscArea > tab.ConfigArea)
+		tab.ConfigArea = tab.LMDscArea;
+	// S-IVB mass is not a CSM or LM pad weight.
+	tab.SIVBWeight = 0.0;
+	tab.SIVBArea = 0.0;
+	tab.CC[RTCC_CONFIG_S] = false;
+	tab.ConfigWeight = tab.CSMWeight + tab.LMAscWeight + tab.LMDscWeight;
+}
+
+// 'L' sets both A and D. 'A' alone is the ascent stage. 'C' with neither is CSM only.
+static bool A14LMAttached(const PLAWDTOutput &tab)
+{
+	return tab.CC[RTCC_CONFIG_A] || tab.CC[RTCC_CONFIG_D];
+}
+
+static bool A14AscentOnly(const PLAWDTOutput &tab)
+{
+	return tab.CC[RTCC_CONFIG_A] && !tab.CC[RTCC_CONFIG_D];
+}
+
+// Live spacecraft at the moment the pad is built. MPTMassUpdate is the same
+// call the MPT uses: config "CL"/"CA"/"CSL" when the LM is with the CSM,
+// "C"/"CS" when it is not, "L" for a full LM and "A" after staging. The
+// S-IVB stays out, including while the stack has not yet reached CSM/LM stage.
+static PLAWDTOutput A14LiveWeights(RTCC *rtcc, VESSEL *v)
+{
+	PLAWDTOutput tab;
+	MED_M50 m50;
+	MED_M55 m55;
+	MED_M49 m49;
+	double lm, asc;
+
+	if (rtcc == NULL || v == NULL)
+		return tab;
+
+	rtcc->MPTMassUpdate(v, m50, m55, m49, true);
+	rtcc->MPTGetConfigFromString(m55.ConfigCode, tab.CC);
+
+	if (tab.CC[RTCC_CONFIG_C] && m50.CSMWT > 0.0)
+		tab.CSMWeight = m50.CSMWT;
+
+	lm = m50.LMWT;
+	asc = m50.LMASCWT;
+	if (!(asc > 0.0))
+		asc = lm;
+	if (lm > 0.0 && asc > lm)
+		asc = lm;
+
+	if (tab.CC[RTCC_CONFIG_D])
+	{
+		tab.LMAscWeight = asc;
+		tab.LMDscWeight = (lm > asc) ? (lm - asc) : 0.0;
+	}
+	else if (tab.CC[RTCC_CONFIG_A])
+	{
+		tab.LMAscWeight = (asc > 0.0) ? asc : lm;
+		tab.LMDscWeight = 0.0;
+	}
+
+	A14FinishWeights(tab);
+	return tab;
+}
+
+// Post-TLI MPT block. Used when the pad is solved before TLI, while the live
+// vessel is still the Earth-orbit stack. Same config bits, still no S-IVB.
+static PLAWDTOutput A14WeightsFromBlock(const MPTVehicleDataBlock &cb)
+{
+	PLAWDTOutput tab;
+
+	tab.CC = cb.ConfigCode;
+	if (cb.CSMMass > 0.0)
+	{
+		tab.CC[RTCC_CONFIG_C] = true;
+		tab.CSMWeight = cb.CSMMass;
+	}
+	if (cb.LMAscentMass > 0.0)
+	{
+		tab.CC[RTCC_CONFIG_A] = true;
+		tab.LMAscWeight = cb.LMAscentMass;
+	}
+	if (cb.LMDescentMass > 0.0)
+	{
+		tab.CC[RTCC_CONFIG_D] = true;
+		tab.LMDscWeight = cb.LMDescentMass;
+	}
+	A14FinishWeights(tab);
+	return tab;
+}
+
+// AP11ManeuverPAD stores N47 from CSMWeight alone. A docked CSM pad prints
+// CSM+LM. An undocked CSM pad prints the CSM. The burn table itself is unchanged.
+static void A14ShowCSMWeight(AP11MNV *form, const PLAWDTOutput &tab)
+{
+	double kg;
+
+	if (form == NULL)
+		return;
+	kg = tab.CSMWeight;
+	if (A14LMAttached(tab))
+		kg += tab.LMAscWeight + tab.LMDscWeight;
+	form->Weight = A14KgToLb(kg);
+	form->LMWeight = A14KgToLb(tab.LMAscWeight + tab.LMDscWeight);
+}
+
 static void A14LMWeightRemark(AP11MNV *form)
 {
 	if (form == NULL || !(form->LMWeight > 1.0))
 		return;
-	if (strstr(form->remarks, "LM weight") != NULL)
+	if (strstr(form->remarks, "LM weight") != NULL || strstr(form->remarks, "Includes LM") != NULL)
 		return;
 
 	char extra[48];
-	sprintf(extra, " LM weight is %.0f.", form->LMWeight);
+	sprintf(extra, " Includes LM %.0f.", form->LMWeight);
 	if (strlen(form->remarks) + strlen(extra) < sizeof(form->remarks))
 		strcat(form->remarks, extra);
-}
-
-// Docked CSM+LM at TIG. GetWeightsTable is the Apollo 11/12 call: CSM from
-// GetMass, LM from the docked vessel. While the stage is still the Saturn
-// stack, GetMass is CSM+LM+S-IVB, so the CSM and LM are the component masses
-// MPTMassUpdate already stores for TLI. The S-IVB is not a CSM pad weight.
-// The TLI burn is the S-IVB and that pad has no N47.
-static PLAWDTOutput A14DockedPadWeights(RTCC *rtcc)
-{
-	VESSEL *v = rtcc->calcParams.src;
-	PLAWDTOutput tab = rtcc->GetWeightsTable(v, true, true);
-	Saturn *sat = (Saturn *)v;
-
-	if (sat != NULL && sat->GetStage() < CSM_LEM_STAGE)
-	{
-		MED_M50 m50;
-		MED_M55 m55;
-		MED_M49 m49;
-		const double ascDefault = 10000.0 * 0.45359237;
-		const double ascMax = 12000.0 * 0.45359237;
-		double lm;
-
-		rtcc->MPTMassUpdate(v, m50, m55, m49, true);
-		tab = PLAWDTOutput();
-		tab.CSMWeight = m50.CSMWT;
-		tab.CSMArea = 129.4 * 0.3048 * 0.3048;
-		tab.ConfigArea = tab.CSMArea;
-		tab.CC[RTCC_CONFIG_C] = tab.CSMWeight > 0.0;
-		lm = m50.LMWT;
-		if (lm > 0.0)
-		{
-			tab.LMAscArea = tab.CSMArea;
-			tab.CC[RTCC_CONFIG_A] = true;
-			if (lm >= ascMax)
-			{
-				tab.LMDscWeight = lm - ascDefault;
-				tab.LMAscWeight = ascDefault;
-				tab.LMDscArea = tab.CSMArea;
-				tab.CC[RTCC_CONFIG_D] = true;
-			}
-			else
-			{
-				tab.LMAscWeight = lm;
-			}
-		}
-		tab.ConfigWeight = tab.CSMWeight + tab.LMAscWeight + tab.LMDscWeight;
-		return tab;
-	}
-
-	// Pad time can be a few minutes before the dock status flips. The LM
-	// vessel mass is the same number GetDockedVesselMass will return.
-	if (tab.LMAscWeight + tab.LMDscWeight < 1.0 && rtcc->mcc != NULL && rtcc->mcc->lm != NULL)
-	{
-		PLAWDTOutput lm = rtcc->GetWeightsTable(rtcc->mcc->lm, false, false);
-
-		tab.LMAscWeight = lm.LMAscWeight;
-		tab.LMDscWeight = lm.LMDscWeight;
-		tab.LMAscArea = lm.LMAscArea;
-		tab.LMDscArea = lm.LMDscArea;
-		if (lm.CC[RTCC_CONFIG_A]) tab.CC[RTCC_CONFIG_A] = true;
-		if (lm.CC[RTCC_CONFIG_D]) tab.CC[RTCC_CONFIG_D] = true;
-		if (tab.LMAscArea > tab.ConfigArea) tab.ConfigArea = tab.LMAscArea;
-		if (tab.LMDscArea > tab.ConfigArea) tab.ConfigArea = tab.LMDscArea;
-		tab.ConfigWeight = tab.CSMWeight + tab.LMAscWeight + tab.LMDscWeight;
-	}
-	return tab;
 }
 
 bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc, char *upMessage)
@@ -302,6 +366,9 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 			break;
 		}
 		sv1.gravref = hEarth;
+		// TLI burnout config. By GET 4:00 the LM is docked and the S-IVB is gone.
+		opt.WeightsTable = A14WeightsFromBlock(PZMPTCSM.mantable[0].CommonBlock);
+		sv1.mass = opt.WeightsTable.ConfigWeight;
 
 		entopt.entrylongmanual = false;
 		entopt.ATPLine = 2; //Table I-7 note 1: TLI+90 is AOL
@@ -320,18 +387,17 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 		opt.HeadsUp = true;
 		opt.REFSMMAT = GetREFSMMATfromAGC(&mcc->cm->agc.vagc, true);
 		opt.RV_MCC = ConvertSVtoEphemData(sv1);
-		opt.WeightsTable.CC[RTCC_CONFIG_C] = true;
-		opt.WeightsTable.ConfigWeight = opt.WeightsTable.CSMWeight = sv1.mass;
 
 		AP11ManeuverPAD(opt, *form);
+		A14ShowCSMWeight(form, opt.WeightsTable);
 		form->lat = res.latitude * DEG;
 		form->lng = res.longitude * DEG;
 		form->RTGO = res.RTGO;
 		form->VI0 = res.VIO / 0.3048;
-		form->Weight = sv1.mass / 0.45359237;
 		form->GET05G = res.GET05G;
 		sprintf(form->purpose, "TLI+90");
 		sprintf(form->remarks, "AOL, GETI 4:00, TLI burnout SV");
+		A14LMWeightRemark(form);
 
 		GMTSV = PZMPTCSM.TimeToBeginManeuver[0] - 10.0 * 60.0;
 		sv_uplink = coast(sv, GMTSV - sv.GMT, RTCC_MPT_CSM);
@@ -410,9 +476,10 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 		opt.UllageDT = 0.0;
 		opt.REFSMMAT = GetREFSMMATfromAGC(&mcc->cm->agc.vagc, true);
 		opt.RV_MCC = StateVectorCalcEphem(calcParams.src);
-		opt.WeightsTable = A14DockedPadWeights(this);
+		opt.WeightsTable = A14LiveWeights(this, calcParams.src);
 
 		AP11ManeuverPAD(opt, *form);
+		A14ShowCSMWeight(form, opt.WeightsTable);
 		sprintf(form->purpose, "CSM/LM SEP");
 		sprintf(form->remarks, "p3-6 4-jet -X, 0.4 fps, no ullage. TIG = TLI cutoff +1:20. Table X prelaunch.");
 		A14LMWeightRemark(form);
@@ -479,9 +546,9 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 		PLAWDTOutput wt;
 		VECTOR3 dvMCC;
 		svMCC = StateVectorCalcEphem(calcParams.src);
-		wt = GetWeightsTable(calcParams.src, true, true);
+		wt = A14LiveWeights(this, calcParams.src);
 		PZMCCPLN.MidcourseGET = A14_MCC2;
-		PZMCCPLN.Config = true;
+		PZMCCPLN.Config = A14LMAttached(wt);
 		PZMCCPLN.Column = 1;
 		PZMCCPLN.SFPBlockNum = 1;
 		PZMCCPLN.Mode = 5;
@@ -541,10 +608,10 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 		MCC2GET = A14_MCC2;
 
 		sv = StateVectorCalcEphem(calcParams.src);
-		WeightsTable = A14DockedPadWeights(this);
+		WeightsTable = A14LiveWeights(this, calcParams.src);
 
 		PZMCCPLN.MidcourseGET = MCC2GET;
-		PZMCCPLN.Config = true;
+		PZMCCPLN.Config = A14LMAttached(WeightsTable);
 		PZMCCPLN.Column = 1;
 		PZMCCPLN.SFPBlockNum = 1;
 		PZMCCPLN.Mode = 5;
@@ -694,6 +761,7 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 				{
 					sprintf(form->remarks, "PTC REFSMMAT. Predicted MCC-2 is outside the 70-90 fps band.");
 				}
+				A14ShowCSMWeight(form, WeightsTable);
 				A14LMWeightRemark(form);
 				AGCStateVectorUpdate(buffer1, RTCC_MPT_CSM, RTCC_MPT_CSM, sv, true);
 				CMCExternalDeltaVUpdate(buffer2, P30TIG, dV_LVLH);
@@ -714,7 +782,7 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 		AP11MNV *form = (AP11MNV *)pad;
 
 		sv = StateVectorCalc(calcParams.src);
-		WeightsTable = A14DockedPadWeights(this);
+		WeightsTable = A14LiveWeights(this, calcParams.src);
 		entopt.SMODE = 14;
 		entopt.RV_MCC = sv;
 		entopt.TIGguess = A14SS(77, 38, 0.0);
@@ -722,7 +790,7 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 		entopt.t_zmin = A14SS(165, 57, 0.0);
 		entopt.entrylongmanual = false;
 		entopt.ATPLine = 0;
-		entopt.csmlmdocked = true;
+		entopt.csmlmdocked = A14LMAttached(WeightsTable);
 		RTEMoonTargeting(&entopt, &res);
 
 		opt.TIG = res.P30TIG;
@@ -735,6 +803,7 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 		AP11ManeuverPAD(opt, *form);
 		sprintf(form->purpose, "Flyby");
 		sprintf(form->remarks, "Height of pericynthion is %.0f NM", res.FlybyAlt / 1852.0);
+		A14ShowCSMWeight(form, WeightsTable);
 		A14LMWeightRemark(form);
 		// Table I-7 note 4. Passed at 35:00; a negative height means it is not clear of the Moon.
 		if (res.FlybyAlt < 0.0)
@@ -762,8 +831,8 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 		AP11MNV *form = (AP11MNV *)pad;
 
 		sv = StateVectorCalcEphem(calcParams.src);
-		WeightsTable = A14DockedPadWeights(this);
-		PZMCCPLN.Config = true;
+		WeightsTable = A14LiveWeights(this, calcParams.src);
+		PZMCCPLN.Config = A14LMAttached(WeightsTable);
 		PZMCCPLN.Column = 1;
 		PZMCCPLN.SFPBlockNum = 2;
 		PZMCCPLN.Mode = 1;
@@ -816,6 +885,7 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 			AP11ManeuverPAD(manopt, *form);
 			sprintf(form->purpose, "MCC-3");
 			sprintf(form->remarks, "PTC REFSMMAT. Table I-5 nominally zero; predicted MCC-4 is above 3.8 fps.");
+			A14ShowCSMWeight(form, WeightsTable);
 			A14LMWeightRemark(form);
 			TimeofIgnition = P30TIG;
 			DeltaV_LVLH = dV_LVLH;
@@ -848,9 +918,9 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 		GMGMED("G00,LEM,LLD,CSM,LCV;");
 
 		sv = StateVectorCalcEphem(calcParams.src);
-		WeightsTable = A14DockedPadWeights(this);
+		WeightsTable = A14LiveWeights(this, calcParams.src);
 		PZMCCPLN.MidcourseGET = A14_MCC4;
-		PZMCCPLN.Config = true;
+		PZMCCPLN.Config = A14LMAttached(WeightsTable);
 		PZMCCPLN.Column = 1;
 		PZMCCPLN.SFPBlockNum = 2;
 		PZMCCPLN.Mode = 1;
@@ -887,9 +957,9 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 		AP11MNV *form = (AP11MNV *)pad;
 
 		sv = StateVectorCalcEphem(calcParams.src);
-		WeightsTable = A14DockedPadWeights(this);
+		WeightsTable = A14LiveWeights(this, calcParams.src);
 		PZMCCPLN.MidcourseGET = A14_MCC4;
-		PZMCCPLN.Config = true;
+		PZMCCPLN.Config = A14LMAttached(WeightsTable);
 		PZMCCPLN.Column = 1;
 		PZMCCPLN.SFPBlockNum = 2;
 		PZMCCPLN.Mode = 1;
@@ -923,6 +993,7 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 		AP11ManeuverPAD(manopt, *form);
 		sprintf(form->purpose, "MCC-4");
 		sprintf(form->remarks, "SPS, PTC REFSMMAT. Table I-5 TIG 77:38:14, nominally zero.");
+		A14ShowCSMWeight(form, WeightsTable);
 		A14LMWeightRemark(form);
 		TimeofIgnition = P30TIG;
 		DeltaV_LVLH = dV_LVLH;
@@ -946,7 +1017,7 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 		AP11MNV *form = (AP11MNV *)pad;
 
 		sv = StateVectorCalc(calcParams.src);
-		WeightsTable = A14DockedPadWeights(this);
+		WeightsTable = A14LiveWeights(this, calcParams.src);
 		if (fcn == 27 && length(DeltaV_LVLH) >= 0.3048)
 		{
 			sv1 = ExecuteManeuver(sv, TimeofIgnition, DeltaV_LVLH, WeightsTable.LMAscWeight + WeightsTable.LMDscWeight, RTCC_ENGINETYPE_CSMSPS);
@@ -964,7 +1035,7 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 		entopt.vessel = calcParams.src;
 		entopt.TIGguess = A14SS(84, 36, 0.0);
 		entopt.t_zmin = A14SS(141, 42, 0.0);
-		entopt.csmlmdocked = true;
+		entopt.csmlmdocked = A14LMAttached(WeightsTable);
 		PZREAP.VRMAX = 37500.0;
 		entopt.entrylongmanual = false;
 		entopt.ATPLine = 0;
@@ -979,7 +1050,10 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 		opt.RV_MCC = ConvertSVtoEphemData(sv1);
 		opt.WeightsTable = WeightsTable;
 		AP11ManeuverPAD(opt, *form);
-		sprintf(form->remarks, "Assumes LS REFSMMAT and docked");
+		if (A14LMAttached(WeightsTable))
+			sprintf(form->remarks, "Assumes LS REFSMMAT and docked");
+		else
+			sprintf(form->remarks, "Assumes LS REFSMMAT");
 		if (!mcc->mcc_calcs.REFSMMATDecision(form->Att * RAD))
 		{
 			REFSMMATOpt refsopt;
@@ -992,13 +1066,17 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 			opt.HeadsUp = true;
 			opt.REFSMMAT = REFSMMAT;
 			AP11ManeuverPAD(opt, *form);
-			sprintf(form->remarks, "Docked, preferred REFSMMAT");
+			if (A14LMAttached(WeightsTable))
+				sprintf(form->remarks, "Docked, preferred REFSMMAT");
+			else
+				sprintf(form->remarks, "Preferred REFSMMAT");
 		}
 		sprintf(form->purpose, "PC+2");
 		if (fcn == 28)
 		{
 			sprintf(form->remarks, "Table I-7 note 5 assumes MCC-4; MCC-4 was not executed");
 		}
+		A14ShowCSMWeight(form, WeightsTable);
 		A14LMWeightRemark(form);
 		form->lat = res.latitude * DEG;
 		form->lng = res.longitude * DEG;
@@ -1020,7 +1098,7 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 		AP11MNV *form = (AP11MNV *)pad;
 
 		sv = StateVectorCalc(calcParams.src);
-		WeightsTable = A14DockedPadWeights(this);
+		WeightsTable = A14LiveWeights(this, calcParams.src);
 		med_k16.Mode = 4;
 		med_k16.Sequence = 1;
 		med_k16.GETTH1 = A14_DOI;
@@ -1041,6 +1119,7 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 			AP11ManeuverPAD(manopt, *form);
 			sprintf(form->purpose, "DOI");
 			sprintf(form->remarks, "Ullage: 4 jet, 14 seconds");
+			A14ShowCSMWeight(form, WeightsTable);
 			A14LMWeightRemark(form);
 			TimeofIgnition = P30TIG;
 			DeltaV_LVLH = dV_LVLH;
@@ -1077,10 +1156,16 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 
 		if (LunarDescentPlanningProcessor(ConvertSVtoEphemData(sv), 0.0) == 0)
 		{
+			PLAWDTOutput lmWt = A14LiveWeights(this, calcParams.tgt);
+			double lmMass = lmWt.LMAscWeight + lmWt.LMDscWeight;
+			double attached = lmWt.CC[RTCC_CONFIG_C] ? lmWt.CSMWeight : 0.0;
+
 			calcParams.DOI = GETfromGMT(PZLDPELM.sv_man_bef[0].GMT);
 			calcParams.PDI = PZLDPDIS.PD_GETIG;
 			CZTDTGTU.GETTD = PZLDPDIS.PD_GETTD;
-			PoweredFlightProcessor(sv, calcParams.DOI, RTCC_ENGINETYPE_LMDPS, 0.0, PZLDPELM.V_man_after[0] - PZLDPELM.sv_man_bef[0].V, false, TimeofIgnition, DeltaV_LVLH);
+			if (lmMass > 0.0)
+				sv.mass = lmMass;
+			PoweredFlightProcessor(sv, calcParams.DOI, RTCC_ENGINETYPE_LMDPS, attached, PZLDPELM.V_man_after[0] - PZLDPELM.sv_man_bef[0].V, false, TimeofIgnition, DeltaV_LVLH);
 
 			opt.LSLat = BZLAND.lat[RTCC_LMPOS_BEST];
 			opt.LSLng = BZLAND.lng[RTCC_LMPOS_BEST];
@@ -1196,7 +1281,7 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 		opt.HeadsUp = false;
 		opt.REFSMMAT = GetREFSMMATfromAGC(&mcc->cm->agc.vagc, true);
 		opt.RV_MCC = sv;
-		opt.WeightsTable = GetWeightsTable(calcParams.src, true, false);
+		opt.WeightsTable = A14LiveWeights(this, calcParams.src);
 		AP11ManeuverPAD(opt, manpad);
 		form->t_Undock = A14_UNDOCK;
 		form->t_Separation = A14_UNDOCK;
@@ -1289,11 +1374,23 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 		}
 
 		AbortGuess = GETI;
-		VEHDATABUF.csmmass = calcParams.src->GetMass();
-		VEHDATABUF.lmascmass = 0.0;
-		VEHDATABUF.lmdscmass = 0.0;
+		opt.WeightsTable = A14LiveWeights(this, calcParams.src);
+		// TEI-4 and TEI-5 are solved after LOI. That burn is already in sv1.
+		if (fcn == 41 || fcn == 42)
+		{
+			opt.WeightsTable.CSMWeight = sv1.mass;
+			A14FinishWeights(opt.WeightsTable);
+		}
+		VEHDATABUF.csmmass = opt.WeightsTable.CSMWeight;
+		VEHDATABUF.lmascmass = opt.WeightsTable.LMAscWeight;
+		VEHDATABUF.lmdscmass = opt.WeightsTable.LMDscWeight;
 		VEHDATABUF.sv = sv_e;
-		VEHDATABUF.config = "C";
+		if (opt.WeightsTable.CC[RTCC_CONFIG_A] && opt.WeightsTable.CC[RTCC_CONFIG_D])
+			VEHDATABUF.config = "CL";
+		else if (opt.WeightsTable.CC[RTCC_CONFIG_A])
+			VEHDATABUF.config = "CA";
+		else
+			VEHDATABUF.config = "C";
 
 		med_f75_f77.T_0_min = AbortGuess - 3600.0;
 		med_f77.T_max = AbortGuess + 3600.0;
@@ -1328,9 +1425,8 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 		opt.enginetype = RTCC_ENGINETYPE_CSMSPS;
 		opt.HeadsUp = false;
 		opt.RV_MCC = sv_e;
-		opt.WeightsTable.CC[RTCC_CONFIG_C] = true;
-		opt.WeightsTable.CSMWeight = opt.WeightsTable.ConfigWeight = sv1.mass;
 		AP11ManeuverPAD(opt, *form);
+		A14ShowCSMWeight(form, opt.WeightsTable);
 
 		RMMYNIInputTable entin;
 		RMMYNIOutputTable entout;
@@ -1358,6 +1454,7 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 		else if (fcn == 45) sprintf(form->remarks, "Preliminary, assumes PC");
 		else if (fcn == 50) sprintf(form->remarks, "Ullage: 4 jet, 12 sec; EOM");
 		else sprintf(form->remarks, "Block data, MPL");
+		A14LMWeightRemark(form);
 
 		if (fcn != 51)
 		{
@@ -1454,7 +1551,13 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 		PDIPADOpt opt;
 		VehicleDataBlock sv;
 
+		PLAWDTOutput lmWt = A14LiveWeights(this, calcParams.tgt);
+		double lmMass = lmWt.LMAscWeight + lmWt.LMDscWeight;
+
 		sv = StateVectorCalcDataBlock(calcParams.tgt);
+		// PDI has no weight line. The ignition mass is the LM, ascent stage after staging.
+		if (lmMass > 0.0)
+			sv.Weight = lmMass;
 		opt.direct = true;
 		opt.HeadsUp = true;
 		opt.REFSMMAT = GetREFSMMATfromAGC(&mcc->lm->agc.vagc, false);
@@ -1512,11 +1615,13 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 		opt.HeadsUp = false;
 		opt.REFSMMAT = GetREFSMMATfromAGC(&mcc->cm->agc.vagc, true);
 		opt.RV_MCC = sv;
-		opt.WeightsTable = GetWeightsTable(calcParams.src, true, false);
+		opt.WeightsTable = A14LiveWeights(this, calcParams.src);
 		AP11ManeuverPAD(opt, *form);
+		A14ShowCSMWeight(form, opt.WeightsTable);
 		sprintf(form->purpose, "SEP");
 		OrbMech::SStoHHMMSS(A14_SEP - 5.0 * 60.0, hh, mm, ss);
 		sprintf(form->remarks, "1 fps retrograde, +Z thrusters. Jettison radial, %d:%02d:%02.0lf", hh, mm, ss);
+		A14LMWeightRemark(form);
 		form->type = 2;
 		TimeofIgnition = A14_SEP;
 		DeltaV_LVLH = dV_LVLH;
@@ -1548,22 +1653,11 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 			opt.HeadsUp = false;
 			opt.REFSMMAT = GetREFSMMATfromAGC(&mcc->lm->agc.vagc, false);
 			opt.RV_MCC = ConvertSVtoEphemData(sv);
-			opt.WeightsTable = GetWeightsTable(calcParams.tgt, false, false);
-			// The deorbit is the ascent stage. GetMass still includes the descent
-			// stage until staging, and that full landed mass is not the N47 weight.
-			{
-				LEM *lem = (LEM *)calcParams.tgt;
-				if (lem->GetStage() < 2)
-				{
-					double asc = lem->GetAscentStageMass();
-					opt.WeightsTable.LMAscWeight = asc;
-					opt.WeightsTable.LMDscWeight = 0.0;
-					opt.WeightsTable.ConfigWeight = asc;
-					opt.WeightsTable.CC[RTCC_CONFIG_D] = false;
-					opt.WeightsTable.CC[RTCC_CONFIG_A] = true;
-				}
-			}
+			// Config "L" is the full LM. Config "A" is the ascent stage after staging.
+			opt.WeightsTable = A14LiveWeights(this, calcParams.tgt);
 			AP11LMManeuverPAD(opt, *form);
+			form->LMWeight = A14KgToLb(opt.WeightsTable.LMAscWeight + opt.WeightsTable.LMDscWeight);
+			form->CSMWeight = opt.WeightsTable.CC[RTCC_CONFIG_C] ? A14KgToLb(opt.WeightsTable.CSMWeight) : 0.0;
 			sprintf(form->purpose, "LM DEORBIT");
 			sprintf(form->remarks, "180 retrograde, 36.5 north. Impact 3.5S 19.27W. P99. LM WT %.0f.", form->LMWeight);
 			AGCStateVectorUpdate(buffer1, sv, false);
@@ -1648,7 +1742,7 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 		entopt.RV_MCC = sv;
 		entopt.TIGguess = MCCtime;
 		entopt.vessel = calcParams.src;
-		entopt.csmlmdocked = (calcParams.src->DockingStatus(0) == 1);
+		entopt.csmlmdocked = A14LMAttached(A14LiveWeights(this, calcParams.src));
 		entopt.type = 3;
 		if (eom)
 		{
@@ -1713,7 +1807,7 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 			}
 			else
 			{
-				opt.WeightsTable = GetWeightsTable(calcParams.src, true, true);
+				opt.WeightsTable = A14LiveWeights(this, calcParams.src);
 				opt.TIG = res.P30TIG;
 				opt.dV_LVLH = res.dV_LVLH;
 				opt.enginetype = mcc->mcc_calcs.SPSRCSDecision(SPS_THRUST / opt.WeightsTable.ConfigWeight, res.dV_LVLH);
@@ -1721,6 +1815,8 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 				opt.REFSMMAT = REFSMMAT;
 				opt.RV_MCC = ConvertSVtoEphemData(sv);
 				AP11ManeuverPAD(opt, *form);
+				A14ShowCSMWeight(form, opt.WeightsTable);
+				A14LMWeightRemark(form);
 				sprintf(form->purpose, manname);
 				form->lat = res.latitude * DEG;
 				form->lng = res.longitude * DEG;
@@ -1819,7 +1915,7 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 		AP11MNV *form = (AP11MNV *)pad;
 
 		sv = StateVectorCalc(calcParams.src);
-		WeightsTable = GetWeightsTable(calcParams.src, true, false);
+		WeightsTable = A14LiveWeights(this, calcParams.src);
 		dt = A14_CIRC - OrbMech::GETfromMJD(sv.MJD, CalcGETBase());
 		sv_tig = coast(sv, dt);
 		r_peri = BZLAND.rad[RTCC_LMPOS_BEST] + 56.04 * 1852.0;
@@ -1837,7 +1933,7 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 		}
 		else
 		{
-			PoweredFlightProcessor(sv, A14_CIRC, RTCC_ENGINETYPE_CSMSPS, 0.0, dV_LVLH, true, P30TIG, dV_LVLH);
+			PoweredFlightProcessor(sv, A14_CIRC, RTCC_ENGINETYPE_CSMSPS, WeightsTable.LMAscWeight + WeightsTable.LMDscWeight, dV_LVLH, true, P30TIG, dV_LVLH);
 			manopt.TIG = P30TIG;
 			manopt.dV_LVLH = dV_LVLH;
 			manopt.enginetype = RTCC_ENGINETYPE_CSMSPS;
@@ -1846,8 +1942,10 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 			manopt.RV_MCC = ConvertSVtoEphemData(sv);
 			manopt.WeightsTable = WeightsTable;
 			AP11ManeuverPAD(manopt, *form);
+			A14ShowCSMWeight(form, WeightsTable);
 			sprintf(form->purpose, "CIRC");
 			sprintf(form->remarks, "Ullage: 4 jet, 11 seconds");
+			A14LMWeightRemark(form);
 			TimeofIgnition = P30TIG;
 			DeltaV_LVLH = dV_LVLH;
 			AGCStateVectorUpdate(buffer1, sv, true, true);
@@ -1882,7 +1980,10 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 		char buffer1[1000], buffer2[1000], buffer3[1000];
 		AP11MNV *form = (AP11MNV *)pad;
 
+		PLAWDTOutput WeightsTable;
+
 		sv = StateVectorCalc(calcParams.src);
+		WeightsTable = A14LiveWeights(this, calcParams.src);
 		GET_SV = OrbMech::GETfromMJD(sv.MJD, CalcGETBase());
 		calcParams.LunarLiftoff = A14_LIFTOFF;
 		// One hour of coast before the search. Not a second flight-plan time.
@@ -1901,7 +2002,7 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 		}
 		else
 		{
-			PoweredFlightProcessor(sv, PZLDPDIS.GETIG[0], RTCC_ENGINETYPE_CSMSPS, 0.0, PZLDPDIS.DVVector[0] * 0.3048, true, TimeofIgnition, DeltaV_LVLH);
+			PoweredFlightProcessor(sv, PZLDPDIS.GETIG[0], RTCC_ENGINETYPE_CSMSPS, WeightsTable.LMAscWeight + WeightsTable.LMDscWeight, PZLDPDIS.DVVector[0] * 0.3048, true, TimeofIgnition, DeltaV_LVLH);
 			refsopt.dV_LVLH = DeltaV_LVLH;
 			refsopt.HeadsUp = true;
 			refsopt.REFSMMATTime = TimeofIgnition;
@@ -1917,11 +2018,13 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 			manopt.REFSMMAT = REFSMMAT;
 			manopt.UllageDT = 0.0;
 			manopt.RV_MCC = ConvertSVtoEphemData(sv);
-			manopt.WeightsTable = GetWeightsTable(calcParams.src, true, false);
+			manopt.WeightsTable = WeightsTable;
 			AP11ManeuverPAD(manopt, *form);
+			A14ShowCSMWeight(form, manopt.WeightsTable);
 			sprintf(form->purpose, "PC-1");
 			// Table I-5: 118:09:40, 18.4 s, 360.7 fps, HA 61.71 HP 57.41. Ullage column is not isolated.
 			sprintf(form->remarks, "Table I-5 planned 118:09:40. Ullage not stated, none applied");
+			A14LMWeightRemark(form);
 
 			AGCStateVectorUpdate(buffer1, sv, true);
 			CMCExternalDeltaVUpdate(buffer2, TimeofIgnition, DeltaV_LVLH);
@@ -1969,18 +2072,78 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 		scrubbed = true;
 		A14Msg(upMessage, "No A14 CSI. Direct rendezvous; Table I-6 TPI is 143:09:40.");
 		break;
+	case 29: //LOI from the Apollo 14 SFP
+	case 30:
+	{
+		bool result = CalculationMTP_H1(fcn, pad, upString, upDesc, upMessage);
+		if (pad != NULL)
+		{
+			AP11MNV *form = (AP11MNV *)pad;
+			PLAWDTOutput wt = A14LiveWeights(this, calcParams.src);
+			A14ShowCSMWeight(form, wt);
+			// H1 writes "LM weight is" from a docked table. N47 is already the total.
+			if (strstr(form->remarks, "LM weight") != NULL)
+			{
+				if (form->LMWeight > 1.0)
+					sprintf(form->remarks, "Includes LM %.0f.", form->LMWeight);
+				else
+					form->remarks[0] = '\0';
+			}
+			else
+				A14LMWeightRemark(form);
+		}
+		return result;
+	}
+	case 7: //CSM DAP. The two printed weights follow the live config, not fcn 7 versus 700.
+	case 700:
+	{
+		AP10DAPDATA *form = (AP10DAPDATA *)pad;
+		PLAWDTOutput wt = A14LiveWeights(this, calcParams.src);
+		bool docked = A14LMAttached(wt);
+
+		CSMDAPUpdate(calcParams.src, *form, docked, A14AscentOnly(wt));
+		form->ThisVehicleWeight = A14KgToLb(wt.CSMWeight);
+		form->OtherVehicleWeight = docked ? A14KgToLb(wt.LMAscWeight + wt.LMDscWeight) : 0.0;
+	}
+	break;
+	case 9: //LM DAP with V42. LM weight is the LM. CSM weight is present only while docked.
+	{
+		LMACTDATA *form = (LMACTDATA *)pad;
+		AP10DAPDATA dap;
+		PLAWDTOutput wt = A14LiveWeights(this, calcParams.tgt);
+		bool docked = wt.CC[RTCC_CONFIG_C];
+		VECTOR3 lmn20, csmn20, V42angles;
+		LEM *lem;
+
+		if (calcParams.tgt == NULL)
+			break;
+
+		LMDAPUpdate(calcParams.tgt, dap, docked, A14AscentOnly(wt));
+		lem = (LEM *)calcParams.tgt;
+		csmn20.x = calcParams.src->imu.Gimbal.X;
+		csmn20.y = calcParams.src->imu.Gimbal.Y;
+		csmn20.z = calcParams.src->imu.Gimbal.Z;
+		lmn20.x = lem->imu.Gimbal.X;
+		lmn20.y = lem->imu.Gimbal.Y;
+		lmn20.z = lem->imu.Gimbal.Z;
+		V42angles = OrbMech::LMDockedFineAlignment(lmn20, csmn20);
+		form->V42Angles.x = V42angles.x * DEG;
+		form->V42Angles.y = V42angles.y * DEG;
+		form->V42Angles.z = V42angles.z * DEG;
+		form->CSMWeight = docked ? A14KgToLb(wt.CSMWeight) : 0.0;
+		form->LMWeight = A14KgToLb(wt.LMAscWeight + wt.LMDscWeight);
+		form->PitchTrim = dap.PitchTrim;
+		form->RollTrim = dap.YawTrim;
+	}
+	break;
 	default:
 		switch (fcn)
 		{
 		case 1: //CSM state vector
 		case 2: //LM state vector in the CSM
 		case 5: //CSM state vector with V66
-		case 7: //CSM DAP
-		case 9: //LM DAP with V42
 		case 10: //Liftoff initialization from the live launch azimuth
 		case 15: //TLI evaluation from the LVDC timebase
-		case 29: //LOI from the Apollo 14 SFP
-		case 30:
 		case 33: //LOI evaluation
 		case 36: //AGS activation from the live clock
 		case 60: //Rev 1 map from the trajectory
@@ -2002,7 +2165,6 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 		case 205: //Entry-interface evaluation
 		case 600: //Map from the trajectory
 		case 601:
-		case 700: //Docked CSM DAP
 			// None of these copy an Apollo 12 site, attitude, or pad number.
 			return CalculationMTP_H1(fcn, pad, upString, upDesc, upMessage);
 		default:
