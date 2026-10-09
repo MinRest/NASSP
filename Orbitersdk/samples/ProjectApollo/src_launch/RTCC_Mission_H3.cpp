@@ -570,18 +570,23 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 		}
 	}
 	break;
-	case 18: //PTC REFSMMAT. Section E average-window epoch, shared by TLC and TEC
+	case 18: //PTC REFSMMAT for Comanche V79. Section E average-window epoch, shared by TLC and TEC.
 	{
 		char buffer[1000];
 		REFSMMATOpt refsopt;
 		MATRIX3 REFSMMAT;
 
+		// Option 6 is the Apollo 12/13 PTC matrix: X in the ecliptic, perpendicular to
+		// the earth-moon line. Comanche 72 starts G&N PTC with V49 to that attitude
+		// and V79 for the roll. Artemis P20 option PTC is not used.
+		// The load is the desired REFSMMAT (MCCCXS). The current REFSMAT address is
+		// SystemParameters.MCCCRF, the Comanche 1735 default.
 		refsopt.REFSMMATopt = 6;
 		refsopt.REFSMMATTime = A14_PTC_REFSMMAT_MJD;
 		REFSMMAT = REFSMMATCalc(&refsopt);
 		AGCDesiredREFSMMATUpdate(buffer, REFSMMAT);
 		sprintf(uplinkdata, "%s", buffer);
-		A14GiveUplink(upString, upDesc, uplinkdata, "PTC REFSMMAT");
+		A14GiveUplink(upString, upDesc, uplinkdata, "PTC REFSMMAT for V79");
 	}
 	break;
 	case 19: //MCC-1 evaluation
@@ -1243,7 +1248,8 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 		calcParams.SVSTORE1.V.x = (int)(res.K1 / 0.3048 / 100.0 * pow(2, 3));
 
 		emem[0] = 16;
-		emem[1] = 2550;
+		// Luminary 178 J1PARM. Luminary 116/131 used 2550; do not hardcode that address.
+		emem[1] = SystemParameters.MCLABT;
 		emem[2] = OrbMech::DoubleToBuffer(res.J1, 23, 1);
 		emem[3] = OrbMech::DoubleToBuffer(res.J1, 23, 0);
 		emem[4] = OrbMech::DoubleToBuffer(res.K1 * PI2, 23, 1);
@@ -1494,6 +1500,7 @@ bool RTCC::CalculationMTP_H3(int fcn, LPVOID &pad, char *upString, char *upDesc,
 		sv0 = StateVectorCalcEphem(calcParams.src);
 		opt.sv0 = sv0;
 		GET_SV = GETfromGMT(sv0.GMT);
+		// Comanche P22 auto optics, acquisition at 35 deg elevation. Not Artemis P24.
 		form->type = 0;
 
 		if (fcn == 61)

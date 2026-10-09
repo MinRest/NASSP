@@ -195,7 +195,7 @@ void MCC::MissionSequence_H3()
 	case MST_H3_TRANSLUNAR_DAY1_5: //L/O+15 voice pad at 06:00, held to the p. 3-15 MCC-1 uplink
 		UpdateMacro(UTP_PADONLY, PT_P37PAD, mcc_calcs.GETEval(A14GET(10, 20, 0)), 16, MST_H3_TRANSLUNAR_DAY1_7);
 		break;
-	case MST_H3_TRANSLUNAR_DAY1_6: //p. 3-10 PTC orientation uplink at 05:20. Epoch is 166:10:30, not TEI.
+	case MST_H3_TRANSLUNAR_DAY1_6: //p. 3-10 PTC REFSMMAT at 05:20 for Comanche V79. Epoch is 166:10:30, not TEI.
 		UpdateMacro(UTP_CMCUPLINKONLY, PT_NONE, mcc_calcs.GETEval(A14GET(6, 0, 0)), 18, MST_H3_TRANSLUNAR_DAY1_5);
 		break;
 	case MST_H3_TRANSLUNAR_DAY1_7: //MCC-1 decision, then the p. 3-15 pad, state vector, and target load
@@ -572,7 +572,7 @@ void MCC::MissionSequence_H3()
 			break;
 		}
 		break;
-	case MST_H3_TRANSEARTH_DAY1_2: //PTC REFSMMAT, then MCC-5 pad at the 164:00 P23
+	case MST_H3_TRANSEARTH_DAY1_2: //Same V79 PTC REFSMMAT, then MCC-5 pad at the 164:00 P23
 		UpdateMacro(UTP_CMCUPLINKONLY, PT_NONE, mcc_calcs.GETEval(A14GET(164, 0, 0)), 18, MST_H3_TRANSEARTH_DAY1_3);
 		break;
 	case MST_H3_TRANSEARTH_DAY1_3:
